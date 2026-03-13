@@ -22,6 +22,7 @@ import { StringEnum } from "@mariozechner/pi-ai";
 import { Text, truncateToWidth, matchesKey, visibleWidth } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 
 // ---------------------------------------------------------------------------
@@ -130,7 +131,7 @@ const InitParams = Type.Object({
   reset_policy: Type.Optional(
     StringEnum(["nothing", "on_exhaustion", "on_finish"] as const, {
       description:
-        'Fresh-session policy. "nothing" keeps resuming in the current session. "on_exhaustion" starts a fresh session when the loop ends unexpectedly. "on_finish" starts a fresh session after every logged experiment. Default: "nothing".',
+        'Fresh-session policy. "nothing" keeps resuming in the current session. "on_exhaustion" starts a fresh session when the loop ends unexpectedly. "on_finish" starts a fresh session after every logged experiment. If omitted, uses autoresearch.defaultResetPolicy from Pi settings and otherwise falls back to "nothing".',
     })
   ),
 });
@@ -192,15 +193,54 @@ function formatNum(value: number | null, unit: string): string {
   return fmtNum(value, 2) + u;
 }
 
-const DEFAULT_RESET_POLICY: SessionResetPolicy = "nothing";
+const FALLBACK_RESET_POLICY: SessionResetPolicy = "nothing";
 const AUTORESEARCH_RESET_COMMAND = "_autoresearch_reset";
 
-function normalizeResetPolicy(value: unknown): SessionResetPolicy {
-  if (value === "on_exhaustion" || value === "on_finish") return value;
-  return DEFAULT_RESET_POLICY;
+function normalizeResetPolicy(value: unknown): SessionResetPolicy | undefined {
+  if (value === "nothing" || value === "on_exhaustion" || value === "on_finish") return value;
+  return undefined;
 }
 
-function createEmptyState(): ExperimentState {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function readJsonObject(filePath: string): Record<string, unknown> | undefined {
+  try {
+    if (!fs.existsSync(filePath)) return undefined;
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+    return isRecord(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function readConfiguredResetPolicy(filePath: string): SessionResetPolicy | undefined {
+  const settings = readJsonObject(filePath);
+  if (!settings) return undefined;
+
+  const autoresearch = settings.autoresearch;
+  if (!isRecord(autoresearch)) return undefined;
+
+  return normalizeResetPolicy(autoresearch.defaultResetPolicy);
+}
+
+function getConfiguredDefaultResetPolicy(cwd: string): SessionResetPolicy {
+  const globalSettingsPath = path.join(os.homedir(), ".pi/agent/settings.json");
+  const projectSettingsPath = path.join(cwd, ".pi/settings.json");
+
+  return (
+    readConfiguredResetPolicy(projectSettingsPath) ??
+    readConfiguredResetPolicy(globalSettingsPath) ??
+    FALLBACK_RESET_POLICY
+  );
+}
+
+function resolveResetPolicy(value: unknown, cwd: string): SessionResetPolicy {
+  return normalizeResetPolicy(value) ?? getConfiguredDefaultResetPolicy(cwd);
+}
+
+function createEmptyState(resetPolicy: SessionResetPolicy = FALLBACK_RESET_POLICY): ExperimentState {
   return {
     results: [],
     bestMetric: null,
@@ -210,7 +250,7 @@ function createEmptyState(): ExperimentState {
     secondaryMetrics: [],
     name: null,
     currentSegment: 0,
-    resetPolicy: DEFAULT_RESET_POLICY,
+    resetPolicy,
   };
 }
 
@@ -562,7 +602,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     lastRunChecks = null;
     runningExperiment = null;
 
-    state = createEmptyState();
+    state = createEmptyState(getConfiguredDefaultResetPolicy(ctx.cwd));
 
     // Primary: read from autoresearch.jsonl (alongside autoresearch.md/sh)
     const jsonlPath = path.join(ctx.cwd, "autoresearch.jsonl");
@@ -581,7 +621,8 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
               if (entry.metricName) state.metricName = entry.metricName;
               if (entry.metricUnit !== undefined) state.metricUnit = entry.metricUnit;
               if (entry.bestDirection) state.bestDirection = entry.bestDirection;
-              state.resetPolicy = normalizeResetPolicy(entry.resetPolicy);
+              state.resetPolicy =
+                normalizeResetPolicy(entry.resetPolicy) ?? getConfiguredDefaultResetPolicy(ctx.cwd);
               // Increment segment (first config = 0, second = 1, etc.)
               if (state.results.length > 0) segment++;
               state.currentSegment = segment;
@@ -633,7 +674,8 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         if (details?.state) {
           state = details.state;
           if (!state.secondaryMetrics) state.secondaryMetrics = [];
-          state.resetPolicy = normalizeResetPolicy(state.resetPolicy);
+          state.resetPolicy =
+            normalizeResetPolicy(state.resetPolicy) ?? getConfiguredDefaultResetPolicy(ctx.cwd);
           if (state.metricUnit === "s" && state.metricName === "metric") {
             state.metricUnit = "";
           }
@@ -918,7 +960,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       if (params.direction === "lower" || params.direction === "higher") {
         state.bestDirection = params.direction;
       }
-      state.resetPolicy = normalizeResetPolicy(params.reset_policy);
+      state.resetPolicy = resolveResetPolicy(params.reset_policy, ctx.cwd);
 
       // Reset results for new baseline segment
       state.results = [];

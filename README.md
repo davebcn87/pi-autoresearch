@@ -80,9 +80,19 @@ The agent runs autonomously: edit → commit → `run_experiment` → `log_exper
 
 `init_experiment` also accepts an optional `reset_policy` for short-context models:
 
-- `nothing` — default. Keep the current behavior and resume in the same session.
-- `on_exhaustion` — if the loop ends unexpectedly, start a fresh session and resume from `autoresearch.md`.
 - `on_finish` — after every `log_experiment`, start a fresh session before the next experiment.
+- `nothing` — keep the current behavior and resume in the same session.
+- `on_exhaustion` — if the loop ends unexpectedly, start a fresh session and resume from `autoresearch.md`.
+
+If omitted, `init_experiment` uses `autoresearch.defaultResetPolicy` from Pi settings and otherwise falls back to `nothing`.
+
+```json
+{
+  "autoresearch": {
+    "defaultResetPolicy": "on_finish"
+  }
+}
+```
 
 If you use `on_finish`, keep `autoresearch.md` and `autoresearch.ideas.md` current before `log_experiment`, because the next iteration will start from disk.
 

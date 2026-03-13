@@ -14,9 +14,11 @@ Autonomous experiment loop: try ideas, keep what works, discard what doesn't, ne
 - **`log_experiment`** — records result. `keep` auto-commits. `discard`/`crash`/`checks_failed` → `git checkout -- .` to revert. Always include secondary `metrics` dict. Dashboard: ctrl+x.
 
 `reset_policy` values:
-- `nothing` — default. Resume in the same session.
-- `on_exhaustion` — hand off to a fresh session if the loop ends unexpectedly.
 - `on_finish` — hand off to a fresh session after every logged experiment.
+- `nothing` — resume in the same session.
+- `on_exhaustion` — hand off to a fresh session if the loop ends unexpectedly.
+
+If `reset_policy` is omitted, `init_experiment` uses `autoresearch.defaultResetPolicy` from Pi settings and otherwise falls back to `nothing`.
 
 ## Setup
 
