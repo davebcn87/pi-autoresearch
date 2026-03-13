@@ -45,6 +45,9 @@ interface MetricDef {
   unit: string;
 }
 
+type SessionResetPolicy = "nothing" | "on_exhaustion" | "on_finish";
+type ResetTriggerReason = "exhaustion" | "finish";
+
 interface ExperimentState {
   results: ExperimentResult[];
   /** Baseline primary metric (from first experiment in current segment) */
@@ -57,6 +60,8 @@ interface ExperimentState {
   name: string | null;
   /** Current segment index (incremented on each init_experiment) */
   currentSegment: number;
+  /** Whether to continue in-place or force a clean session handoff. */
+  resetPolicy: SessionResetPolicy;
 }
 
 interface RunDetails {
@@ -122,6 +127,12 @@ const InitParams = Type.Object({
         'Whether "lower" or "higher" is better for the primary metric. Default: "lower".',
     })
   ),
+  reset_policy: Type.Optional(
+    StringEnum(["nothing", "on_exhaustion", "on_finish"] as const, {
+      description:
+        'Fresh-session policy. "nothing" keeps resuming in the current session. "on_exhaustion" starts a fresh session when the loop ends unexpectedly. "on_finish" starts a fresh session after every logged experiment. Default: "nothing".',
+    })
+  ),
 });
 
 const LogParams = Type.Object({
@@ -179,6 +190,46 @@ function formatNum(value: number | null, unit: string): string {
   if (value === Math.round(value)) return fmtNum(value) + u;
   // Fractional: 2 decimal places
   return fmtNum(value, 2) + u;
+}
+
+const DEFAULT_RESET_POLICY: SessionResetPolicy = "nothing";
+const AUTORESEARCH_RESET_COMMAND = "_autoresearch_reset";
+
+function normalizeResetPolicy(value: unknown): SessionResetPolicy {
+  if (value === "on_exhaustion" || value === "on_finish") return value;
+  return DEFAULT_RESET_POLICY;
+}
+
+function createEmptyState(): ExperimentState {
+  return {
+    results: [],
+    bestMetric: null,
+    bestDirection: "lower",
+    metricName: "metric",
+    metricUnit: "",
+    secondaryMetrics: [],
+    name: null,
+    currentSegment: 0,
+    resetPolicy: DEFAULT_RESET_POLICY,
+  };
+}
+
+function buildResumeMessage(cwd: string, reason: ResetTriggerReason): string {
+  const ideasPath = path.join(cwd, "autoresearch.ideas.md");
+  const hasIdeas = fs.existsSync(ideasPath);
+
+  let text =
+    reason === "finish"
+      ? "The previous experiment finished and reset_policy requires a fresh session. Continue the autoresearch loop from here."
+      : "The previous autoresearch session ended while the loop was active, likely from context exhaustion or another error. Continue the autoresearch loop from here.";
+
+  text += " Read autoresearch.md and git log for context before choosing the next experiment.";
+
+  if (hasIdeas) {
+    text += " Check autoresearch.ideas.md for promising paths to explore. Prune stale or already-tried ideas.";
+  }
+
+  return text;
 }
 
 function isBetter(
@@ -488,6 +539,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   // Auto-resume tracking
   let lastAutoResumeTime = 0;
   let experimentsThisSession = 0; // reset on agent_start, incremented on log_experiment
+  let pendingSessionReset: ResetTriggerReason | null = null;
 
   // Track last run's checks result so log_experiment can gate "keep" status
   let lastRunChecks: { pass: boolean; output: string; duration: number } | null = null;
@@ -499,16 +551,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   let spinnerFrame = 0;
   const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-  let state: ExperimentState = {
-    results: [],
-    bestMetric: null,
-    bestDirection: "lower",
-    metricName: "metric",
-    metricUnit: "",
-    secondaryMetrics: [],
-    name: null,
-    currentSegment: 0,
-  };
+  let state: ExperimentState = createEmptyState();
 
   // -----------------------------------------------------------------------
   // State reconstruction
@@ -519,16 +562,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     lastRunChecks = null;
     runningExperiment = null;
 
-    state = {
-      results: [],
-      bestMetric: null,
-      bestDirection: "lower",
-      metricName: "metric",
-      metricUnit: "",
-      secondaryMetrics: [],
-      name: null,
-      currentSegment: 0,
-    };
+    state = createEmptyState();
 
     // Primary: read from autoresearch.jsonl (alongside autoresearch.md/sh)
     const jsonlPath = path.join(ctx.cwd, "autoresearch.jsonl");
@@ -547,6 +581,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
               if (entry.metricName) state.metricName = entry.metricName;
               if (entry.metricUnit !== undefined) state.metricUnit = entry.metricUnit;
               if (entry.bestDirection) state.bestDirection = entry.bestDirection;
+              state.resetPolicy = normalizeResetPolicy(entry.resetPolicy);
               // Increment segment (first config = 0, second = 1, etc.)
               if (state.results.length > 0) segment++;
               state.currentSegment = segment;
@@ -598,6 +633,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         if (details?.state) {
           state = details.state;
           if (!state.secondaryMetrics) state.secondaryMetrics = [];
+          state.resetPolicy = normalizeResetPolicy(state.resetPolicy);
           if (state.metricUnit === "s" && state.metricName === "metric") {
             state.metricUnit = "";
           }
@@ -731,6 +767,43 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     }
   };
 
+  const queueFreshSessionReset = (
+    reason: ResetTriggerReason,
+    options?: { deliverAs?: "steer" | "followUp" }
+  ) => {
+    pendingSessionReset = reason;
+    const command = `/${AUTORESEARCH_RESET_COMMAND} ${reason}`;
+    if (options?.deliverAs) {
+      pi.sendUserMessage(command, { deliverAs: options.deliverAs });
+    } else {
+      pi.sendUserMessage(command);
+    }
+  };
+
+  pi.registerCommand(AUTORESEARCH_RESET_COMMAND, {
+    description: "Internal autoresearch handoff to a clean session",
+    handler: async (args, ctx) => {
+      const reason: ResetTriggerReason = args.trim() === "finish" ? "finish" : "exhaustion";
+      pendingSessionReset = null;
+
+      if (!autoresearchMode || !fs.existsSync(path.join(ctx.cwd, "autoresearch.md"))) {
+        return;
+      }
+
+      const currentSessionFile = ctx.sessionManager.getSessionFile();
+      const newSessionResult = await ctx.newSession({
+        parentSession: currentSessionFile,
+      });
+
+      if (newSessionResult.cancelled) {
+        if (ctx.hasUI) ctx.ui.notify("Autoresearch session reset cancelled", "info");
+        return;
+      }
+
+      pi.sendUserMessage(buildResumeMessage(ctx.cwd, reason));
+    },
+  });
+
   pi.on("session_start", async (_e, ctx) => reconstructState(ctx));
   pi.on("session_switch", async (_e, ctx) => reconstructState(ctx));
   pi.on("session_fork", async (_e, ctx) => reconstructState(ctx));
@@ -739,6 +812,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   // Reset per-session experiment counter when agent starts
   pi.on("agent_start", async () => {
     experimentsThisSession = 0;
+    pendingSessionReset = null;
   });
 
   // Clear running experiment state when agent stops; check ideas file for continuation
@@ -747,6 +821,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     if (overlayTui) overlayTui.requestRender();
 
     if (!autoresearchMode) return;
+    if (pendingSessionReset !== null) return;
 
     // Don't auto-resume if no experiments ran this session (user likely stopped manually)
     if (experimentsThisSession === 0) return;
@@ -756,17 +831,12 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     if (now - lastAutoResumeTime < 5 * 60 * 1000) return;
     lastAutoResumeTime = now;
 
-    // Auto-continue: send a message to resume the loop
-    // The agent reads autoresearch.md on startup which has all context
-    const ideasPath = path.join(ctx.cwd, "autoresearch.ideas.md");
-    const hasIdeas = fs.existsSync(ideasPath);
-
-    let resumeMsg = "Autoresearch loop ended (likely context limit). Resume the experiment loop — read autoresearch.md and git log for context.";
-    if (hasIdeas) {
-      resumeMsg += " Check autoresearch.ideas.md for promising paths to explore. Prune stale/tried ideas.";
+    if (state.resetPolicy === "on_exhaustion" || state.resetPolicy === "on_finish") {
+      queueFreshSessionReset("exhaustion");
+      return;
     }
 
-    pi.sendUserMessage(resumeMsg);
+    pi.sendUserMessage(buildResumeMessage(ctx.cwd, "exhaustion"));
   });
 
   // When in autoresearch mode, add a static note to the system prompt.
@@ -788,6 +858,17 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       `\nExperiment rules: ${mdPath} — read this file at the start of every session and after compaction.` +
       "\nWrite promising but deferred optimizations as bullet points to autoresearch.ideas.md — don't let good ideas get lost." +
       "\nIf the user sends a follow-on message while an experiment is running, finish the current run_experiment + log_experiment cycle first, then address their message in the next iteration.";
+
+    if (state.resetPolicy === "on_exhaustion") {
+      extra +=
+        "\n\n## Fresh Session Reset (ACTIVE)" +
+        '\nreset_policy is "on_exhaustion". If the loop ends while autoresearch is active, the extension will start a fresh session and ask you to resume from disk.';
+    } else if (state.resetPolicy === "on_finish") {
+      extra +=
+        "\n\n## Fresh Session Reset (ACTIVE)" +
+        '\nreset_policy is "on_finish". The extension will start a fresh session after every successful log_experiment.' +
+        "\nUpdate autoresearch.md and autoresearch.ideas.md before log_experiment whenever future iterations need that context.";
+    }
 
     if (hasChecks) {
       extra +=
@@ -816,13 +897,15 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     name: "init_experiment",
     label: "Init Experiment",
     description:
-      "Initialize the experiment session. Call once before the first run_experiment to set the name, primary metric, unit, and direction. Writes the config header to autoresearch.jsonl.",
+      "Initialize the experiment session. Call once before the first run_experiment to set the name, primary metric, unit, direction, and optional fresh-session reset policy. Writes the config header to autoresearch.jsonl.",
     promptSnippet:
-      "Initialize experiment session (name, metric, unit, direction). Call once before first run.",
+      "Initialize experiment session (name, metric, unit, direction, optional reset_policy). Call once before first run.",
     promptGuidelines: [
       "Call init_experiment exactly once at the start of an autoresearch session, before the first run_experiment.",
       "If autoresearch.jsonl already exists with a config, do NOT call init_experiment again.",
       "If the optimization target changes (different benchmark, metric, or workload), call init_experiment again to insert a new config header and reset the baseline.",
+      'Use reset_policy "on_exhaustion" for short-context models that need a fresh session when the loop ends unexpectedly.',
+      'Use reset_policy "on_finish" when every experiment should hand off into a brand-new session.',
     ],
     parameters: InitParams,
 
@@ -835,6 +918,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       if (params.direction === "lower" || params.direction === "higher") {
         state.bestDirection = params.direction;
       }
+      state.resetPolicy = normalizeResetPolicy(params.reset_policy);
 
       // Reset results for new baseline segment
       state.results = [];
@@ -850,6 +934,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
           metricName: state.metricName,
           metricUnit: state.metricUnit,
           bestDirection: state.bestDirection,
+          resetPolicy: state.resetPolicy,
         });
         if (isReinit) {
           fs.appendFileSync(jsonlPath, config + "\n");
@@ -873,7 +958,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       return {
         content: [{
           type: "text",
-          text: `✅ Experiment initialized: "${state.name}"${reinitNote}\nMetric: ${state.metricName} (${state.metricUnit || "unitless"}, ${state.bestDirection} is better)\nConfig written to autoresearch.jsonl. Now run the baseline with run_experiment.`,
+          text: `✅ Experiment initialized: "${state.name}"${reinitNote}\nMetric: ${state.metricName} (${state.metricUnit || "unitless"}, ${state.bestDirection} is better)\nReset policy: ${state.resetPolicy}\nConfig written to autoresearch.jsonl. Now run the baseline with run_experiment.`,
         }],
         details: { state: { ...state } },
       };
@@ -1123,11 +1208,12 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       "log_experiment automatically runs git add -A && git commit with the description and a Result trailer. Do NOT commit manually before calling log_experiment.",
       "Use status 'keep' if the PRIMARY metric improved. 'discard' if worse or unchanged. 'crash' if it failed. Secondary metrics are for monitoring — they almost never affect keep/discard. Only discard a primary improvement if a secondary metric degraded catastrophically, and explain why in the description.",
       "If you discover complex but promising optimizations you won't pursue immediately, append them as bullet points to autoresearch.ideas.md. Don't let good ideas get lost.",
+      'If reset_policy is "on_finish", update any important notes in autoresearch.md and autoresearch.ideas.md before calling log_experiment. The extension will immediately hand off into a fresh session after the log succeeds.',
     ],
     parameters: LogParams,
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const secondaryMetrics = params.metrics ?? {};
+      const secondaryMetrics: Record<string, number> = params.metrics ?? {};
 
       // Gate: prevent "keep" when last run's checks failed
       if (params.status === "keep" && lastRunChecks && !lastRunChecks.pass) {
@@ -1294,6 +1380,16 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
       // Refresh fullscreen overlay if open
       if (overlayTui) overlayTui.requestRender();
+
+      if (state.resetPolicy === "on_finish") {
+        try {
+          queueFreshSessionReset("finish", { deliverAs: "steer" });
+          text += "\n🔄 Fresh session reset queued (reset_policy=on_finish)";
+        } catch (e) {
+          pendingSessionReset = null;
+          text += `\n⚠️ Failed to queue fresh session reset: ${e instanceof Error ? e.message : String(e)}`;
+        }
+      }
 
       return {
         content: [{ type: "text", text }],

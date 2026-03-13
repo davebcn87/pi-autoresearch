@@ -23,7 +23,7 @@ Inspired by [karpathy/autoresearch](https://github.com/karpathy/autoresearch). W
 
 | Tool | Description |
 |------|-------------|
-| `init_experiment` | One-time session config — name, metric, unit, direction |
+| `init_experiment` | One-time session config — name, metric, unit, direction, optional `reset_policy` |
 | `run_experiment` | Runs any command, times wall-clock duration, captures output |
 | `log_experiment` | Records result, auto-commits, updates widget and dashboard |
 
@@ -77,6 +77,14 @@ The agent asks about your goal, command, metric, and files in scope — or infer
 ### 2. The loop
 
 The agent runs autonomously: edit → commit → `run_experiment` → `log_experiment` → keep or revert → repeat. It never stops unless interrupted.
+
+`init_experiment` also accepts an optional `reset_policy` for short-context models:
+
+- `nothing` — default. Keep the current behavior and resume in the same session.
+- `on_exhaustion` — if the loop ends unexpectedly, start a fresh session and resume from `autoresearch.md`.
+- `on_finish` — after every `log_experiment`, start a fresh session before the next experiment.
+
+If you use `on_finish`, keep `autoresearch.md` and `autoresearch.ideas.md` current before `log_experiment`, because the next iteration will start from disk.
 
 Every result is appended to `autoresearch.jsonl` in your project — one line per run. This means:
 
