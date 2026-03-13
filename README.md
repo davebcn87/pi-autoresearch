@@ -31,6 +31,7 @@ Inspired by [karpathy/autoresearch](https://github.com/karpathy/autoresearch). W
 
 - **Status widget** — always visible above the editor: `🔬 autoresearch 12 runs 8 kept │ best: 42.3s`
 - **`/autoresearch`** — full results dashboard (`Ctrl+X` to toggle, `Escape` to close)
+- **Session-scoped state** — widget state and autoresearch prompt injection stay isolated to the active session/project; switching sessions clears stale autoresearch UI.
 
 ### Skill
 
