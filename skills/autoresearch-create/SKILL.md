@@ -9,13 +9,13 @@ Autonomous experiment loop: try ideas, keep what works, discard what doesn't, ne
 
 ## Tools
 
-- **`init_experiment`** — configure session (name, metric, unit, direction). Call again to re-initialize with a new baseline when the optimization target changes.
+- **`init_experiment`** — configure session (name, metric, unit, direction, max_experiments). Call again to re-initialize with a new baseline when the optimization target changes.
 - **`run_experiment`** — runs command, times it, captures output.
 - **`log_experiment`** — records result. `keep` auto-commits. `discard`/`crash` → `git checkout -- .` to revert. Always include secondary `metrics` dict. Dashboard: ctrl+x.
 
 ## Setup
 
-1. Ask (or infer): **Goal**, **Command**, **Metric** (+ direction), **Files in scope**, **Constraints**.
+1. Ask (or infer): **Goal**, **Command**, **Metric** (+ direction), **Files in scope**, **Constraints**, **Max experiments** (optional — limit how many experiments to run before stopping; omit for unlimited).
 2. `git checkout -b autoresearch/<goal>-<date>`
 3. Read the source files. Understand the workload deeply before writing anything.
 4. Write `autoresearch.md` and `autoresearch.sh` (see below). Commit both.
@@ -69,7 +69,7 @@ Bash script (`set -euo pipefail`) that: pre-checks fast (syntax errors in <1s), 
 - **Think longer when stuck.** Re-read source files, study the profiling data, reason about what the CPU is actually doing. The best ideas come from deep understanding, not from trying random variations.
 - **Resuming:** if `autoresearch.md` exists, read it + git log, continue looping.
 
-**NEVER STOP.** The user may be away for hours. Keep going until interrupted.
+**NEVER STOP** (unless `max_experiments` is set). The user may be away for hours. Keep going until interrupted or the experiment limit is reached.
 
 ## Ideas Backlog
 

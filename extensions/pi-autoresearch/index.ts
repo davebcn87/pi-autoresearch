@@ -57,6 +57,8 @@ interface ExperimentState {
   name: string | null;
   /** Current segment index (incremented on each init_experiment) */
   currentSegment: number;
+  /** Maximum number of experiments before auto-stopping. null = unlimited. */
+  maxExperiments: number | null;
 }
 
 interface RunDetails {
@@ -109,6 +111,13 @@ const InitParams = Type.Object({
     Type.String({
       description:
         'Whether "lower" or "higher" is better for the primary metric. Default: "lower".',
+    })
+  ),
+  max_experiments: Type.Optional(
+    Type.Integer({
+      description:
+        "Maximum number of experiments (including the baseline run) before auto-stopping. Omit for unlimited.",
+      minimum: 1,
     })
   ),
 });
@@ -492,6 +501,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     secondaryMetrics: [],
     name: null,
     currentSegment: 0,
+    maxExperiments: null,
   };
 
   // -----------------------------------------------------------------------
@@ -508,6 +518,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       secondaryMetrics: [],
       name: null,
       currentSegment: 0,
+      maxExperiments: null,
     };
 
     // Primary: read from autoresearch.jsonl (alongside autoresearch.md/sh)
@@ -527,6 +538,10 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
               if (entry.metricName) state.metricName = entry.metricName;
               if (entry.metricUnit !== undefined) state.metricUnit = entry.metricUnit;
               if (entry.bestDirection) state.bestDirection = entry.bestDirection;
+              state.maxExperiments =
+                typeof entry.maxExperiments === "number" && entry.maxExperiments > 0
+                  ? entry.maxExperiments
+                  : null;
               // Increment segment (first config = 0, second = 1, etc.)
               if (state.results.length > 0) segment++;
               state.currentSegment = segment;
@@ -759,7 +774,10 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     let extra =
       "\n\n## Autoresearch Mode (ACTIVE)" +
       "\nYou are in autoresearch mode. Optimize the primary metric through an autonomous experiment loop." +
-      "\nUse init_experiment, run_experiment, and log_experiment tools. NEVER STOP until interrupted." +
+      "\nUse init_experiment, run_experiment, and log_experiment tools." +
+      (state.maxExperiments !== null
+        ? `\nMax experiments: ${state.maxExperiments}. STOP the loop when log_experiment tells you the limit is reached.`
+        : "\nNEVER STOP until interrupted.") +
       `\nExperiment rules: ${mdPath} — read this file at the start of every session and after compaction.` +
       "\nWrite promising but deferred optimizations as bullet points to autoresearch.ideas.md — don't let good ideas get lost." +
       "\nIf the user sends a follow-on message while an experiment is running, finish the current run_experiment + log_experiment cycle first, then address their message in the next iteration.";
@@ -788,6 +806,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       "Call init_experiment exactly once at the start of an autoresearch session, before the first run_experiment.",
       "If autoresearch.jsonl already exists with a config, do NOT call init_experiment again.",
       "If the optimization target changes (different benchmark, metric, or workload), call init_experiment again to insert a new config header and reset the baseline.",
+      "Set max_experiments to limit the number of experiments. When the limit is reached, the loop auto-stops.",
     ],
     parameters: InitParams,
 
@@ -800,6 +819,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       if (params.direction === "lower" || params.direction === "higher") {
         state.bestDirection = params.direction;
       }
+      state.maxExperiments = params.max_experiments ?? null;
 
       // Reset results for new baseline segment
       state.results = [];
@@ -815,6 +835,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
           metricName: state.metricName,
           metricUnit: state.metricUnit,
           bestDirection: state.bestDirection,
+          maxExperiments: state.maxExperiments,
         });
         if (isReinit) {
           fs.appendFileSync(jsonlPath, config + "\n");
@@ -835,10 +856,12 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       updateWidget(ctx);
 
       const reinitNote = isReinit ? " (re-initialized — previous results archived, new baseline needed)" : "";
+      const limitNote =
+        state.maxExperiments !== null ? `\nMax experiments: ${state.maxExperiments}` : "";
       return {
         content: [{
           type: "text",
-          text: `✅ Experiment initialized: "${state.name}"${reinitNote}\nMetric: ${state.metricName} (${state.metricUnit || "unitless"}, ${state.bestDirection} is better)\nConfig written to autoresearch.jsonl. Now run the baseline with run_experiment.`,
+          text: `✅ Experiment initialized: "${state.name}"${reinitNote}\nMetric: ${state.metricName} (${state.metricUnit || "unitless"}, ${state.bestDirection} is better)${limitNote}\nConfig written to autoresearch.jsonl. Now run the baseline with run_experiment.`,
         }],
         details: { state: { ...state } },
       };
@@ -874,6 +897,19 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     parameters: RunParams,
 
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
+      if (state.maxExperiments !== null) {
+        const segmentCount = currentResults(state.results, state.currentSegment).length;
+        if (segmentCount >= state.maxExperiments) {
+          return {
+            content: [{
+              type: "text",
+              text: `🛑 Maximum experiments reached (${state.maxExperiments}). The experiment loop is done. To continue, call init_experiment to start a new segment.`,
+            }],
+            details: {},
+          };
+        }
+      }
+
       const timeout = (params.timeout_seconds ?? 600) * 1000;
 
       runningExperiment = { startedAt: Date.now(), command: params.command };
@@ -1074,12 +1110,12 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       state.bestMetric = findBaselineMetric(state.results, state.currentSegment);
 
       // Build response text
-      const curCount = currentResults(state.results, state.currentSegment).length;
+      const segmentCount = currentResults(state.results, state.currentSegment).length;
       let text = `Logged #${state.results.length}: ${experiment.status} — ${experiment.description}`;
 
       if (state.bestMetric !== null) {
         text += `\nBaseline ${state.metricName}: ${formatNum(state.bestMetric, state.metricUnit)}`;
-        if (curCount > 1 && params.status === "keep" && params.metric > 0) {
+        if (segmentCount > 1 && params.status === "keep" && params.metric > 0) {
           const delta = params.metric - state.bestMetric;
           const pct = ((delta / state.bestMetric) * 100).toFixed(1);
           const sign = delta > 0 ? "+" : "";
@@ -1107,7 +1143,11 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         text += `\nSecondary: ${parts.join("  ")}`;
       }
 
-      text += `\n(${state.results.length} experiments total)`;
+      text += `\n(${segmentCount} experiments`;
+      if (state.maxExperiments !== null) {
+        text += ` / ${state.maxExperiments} max`;
+      }
+      text += `)`;
 
       // Auto-commit only on keep — discards/crashes get reverted anyway
       if (params.status === "keep") {
@@ -1164,6 +1204,13 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
       // Clear running experiment (log_experiment consumes the run)
       runningExperiment = null;
+
+      const limitReached =
+        state.maxExperiments !== null && segmentCount >= state.maxExperiments;
+      if (limitReached) {
+        text += `\n\n🛑 Maximum experiments reached (${state.maxExperiments}). STOP the experiment loop now.`;
+        autoresearchMode = false;
+      }
 
       updateWidget(ctx);
 
