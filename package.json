@@ -2,6 +2,10 @@
   "name": "pi-autoresearch",
   "version": "1.0.0",
   "description": "Autonomous experiment loop for pi — run, measure, keep or discard. Inspired by karpathy/autoresearch.",
+  "scripts": {
+    "test": "node --test",
+    "test:integration": "PI_AUTORESEARCH_RUN_INTEGRATION=1 node --test"
+  },
   "keywords": [
     "pi-package"
   ],

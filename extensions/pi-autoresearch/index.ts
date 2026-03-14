@@ -18,7 +18,7 @@ import type {
   Theme,
 } from "@mariozechner/pi-coding-agent";
 import { truncateTail } from "@mariozechner/pi-coding-agent";
-import { StringEnum } from "@mariozechner/pi-ai";
+import { StringEnum, isContextOverflow } from "@mariozechner/pi-ai";
 import { Text, truncateToWidth, matchesKey, visibleWidth } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 import * as fs from "node:fs";
@@ -194,7 +194,7 @@ function formatNum(value: number | null, unit: string): string {
 }
 
 const FALLBACK_RESET_POLICY: SessionResetPolicy = "nothing";
-const AUTORESEARCH_RESET_COMMAND = "_autoresearch_reset";
+const AUTORESEARCH_RESET_MARKER = "__pi_autoresearch_reset__:";
 
 function normalizeResetPolicy(value: unknown): SessionResetPolicy | undefined {
   if (value === "nothing" || value === "on_exhaustion" || value === "on_finish") return value;
@@ -225,8 +225,14 @@ function readConfiguredResetPolicy(filePath: string): SessionResetPolicy | undef
   return normalizeResetPolicy(autoresearch.defaultResetPolicy);
 }
 
+function getAgentSettingsDir(): string {
+  return process.env.PI_CODING_AGENT_DIR
+    ? path.resolve(process.env.PI_CODING_AGENT_DIR)
+    : path.join(os.homedir(), ".pi/agent");
+}
+
 function getConfiguredDefaultResetPolicy(cwd: string): SessionResetPolicy {
-  const globalSettingsPath = path.join(os.homedir(), ".pi/agent/settings.json");
+  const globalSettingsPath = path.join(getAgentSettingsDir(), "settings.json");
   const projectSettingsPath = path.join(cwd, ".pi/settings.json");
 
   return (
@@ -814,36 +820,52 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     options?: { deliverAs?: "steer" | "followUp" }
   ) => {
     pendingSessionReset = reason;
-    const command = `/${AUTORESEARCH_RESET_COMMAND} ${reason}`;
+    const marker = `${AUTORESEARCH_RESET_MARKER}${reason}`;
     if (options?.deliverAs) {
-      pi.sendUserMessage(command, { deliverAs: options.deliverAs });
+      pi.sendUserMessage(marker, { deliverAs: options.deliverAs });
     } else {
-      pi.sendUserMessage(command);
+      pi.sendUserMessage(marker);
     }
   };
 
-  pi.registerCommand(AUTORESEARCH_RESET_COMMAND, {
-    description: "Internal autoresearch handoff to a clean session",
-    handler: async (args, ctx) => {
-      const reason: ResetTriggerReason = args.trim() === "finish" ? "finish" : "exhaustion";
-      pendingSessionReset = null;
+  const endedWithError = (messages: { role: string; stopReason?: string; errorMessage?: string }[], contextWindow?: number) => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const message = messages[i];
+      if (message.role !== "assistant") continue;
+      if (message.stopReason === "error") return true;
+      if (message.errorMessage && isContextOverflow(message as never, contextWindow)) return true;
+      return false;
+    }
+    return false;
+  };
 
-      if (!autoresearchMode || !fs.existsSync(path.join(ctx.cwd, "autoresearch.md"))) {
-        return;
-      }
+  pi.on("input", async (event, ctx) => {
+    if (event.source !== "extension" || !event.text.startsWith(AUTORESEARCH_RESET_MARKER)) {
+      return;
+    }
 
-      const currentSessionFile = ctx.sessionManager.getSessionFile();
-      const newSessionResult = await ctx.newSession({
-        parentSession: currentSessionFile,
-      });
+    const reasonText = event.text.slice(AUTORESEARCH_RESET_MARKER.length).trim();
+    const reason: ResetTriggerReason = reasonText === "finish" ? "finish" : "exhaustion";
+    pendingSessionReset = null;
 
-      if (newSessionResult.cancelled) {
-        if (ctx.hasUI) ctx.ui.notify("Autoresearch session reset cancelled", "info");
-        return;
-      }
+    if (!autoresearchMode || !fs.existsSync(path.join(ctx.cwd, "autoresearch.md"))) {
+      return { action: "handled" as const };
+    }
 
-      pi.sendUserMessage(buildResumeMessage(ctx.cwd, reason));
-    },
+    const sessionManager = ctx.sessionManager as typeof ctx.sessionManager & {
+      newSession?: (options?: { parentSession?: string }) => string | undefined;
+    };
+
+    if (typeof sessionManager.newSession !== "function") {
+      if (ctx.hasUI) ctx.ui.notify("Autoresearch session reset is unavailable in this mode", "error");
+      return { action: "handled" as const };
+    }
+
+    const currentSessionFile = ctx.sessionManager.getSessionFile();
+    sessionManager.newSession({ parentSession: currentSessionFile });
+    reconstructState(ctx);
+    pi.sendUserMessage(buildResumeMessage(ctx.cwd, reason));
+    return { action: "handled" as const };
   });
 
   pi.on("session_start", async (_e, ctx) => reconstructState(ctx));
@@ -858,7 +880,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   });
 
   // Clear running experiment state when agent stops; check ideas file for continuation
-  pi.on("agent_end", async (_event, ctx) => {
+  pi.on("agent_end", async (event, ctx) => {
     runningExperiment = null;
     if (overlayTui) overlayTui.requestRender();
 
@@ -873,7 +895,11 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     if (now - lastAutoResumeTime < 5 * 60 * 1000) return;
     lastAutoResumeTime = now;
 
-    if (state.resetPolicy === "on_exhaustion" || state.resetPolicy === "on_finish") {
+    const shouldResetForError =
+      state.resetPolicy === "on_finish" ||
+      (state.resetPolicy === "on_exhaustion" && endedWithError(event.messages as never[], ctx.model?.contextWindow));
+
+    if (shouldResetForError) {
       queueFreshSessionReset("exhaustion");
       return;
     }
