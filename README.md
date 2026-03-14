@@ -135,7 +135,7 @@ Plus **fresh validation** every 10 experiments to catch overfitting to the test 
 - **Widget** — always visible above the editor
 - **`/autotrain`** — full dashboard with results table
 - **`Escape`** — interrupt anytime
-- **[pi-session-tracker](https://github.com/gary149/pi-session-tracker)** — run in a separate Claude session to get a structured report of what the agent is doing: every tool call, HF operation, experiment result, and error, quantified and organized by phase. Useful for long-running sessions where you want to check progress without interrupting the loop.
+- **[pi-session-tracker](https://github.com/gary149/pi-session-tracker)** — run in a separate Claude/Codex/Pi session to get a structured report of what the agent is doing: every tool call, HF operation, experiment result, and error, quantified and organized by phase. Useful for long-running sessions where you want to check progress without interrupting the loop.
 
 ---
 
