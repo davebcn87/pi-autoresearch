@@ -14,7 +14,7 @@ A specialized [autoresearch](https://github.com/karpathy/autoresearch) variant f
 
 ## What's included
 
-| | |
+| Component | Description |
 |---|---|
 | **Extension** | Tools + live widget + `/autotrain` dashboard |
 | **Skill** | Detects hardware, selects framework, creates data splits, writes session files, starts the fine-tuning loop |
