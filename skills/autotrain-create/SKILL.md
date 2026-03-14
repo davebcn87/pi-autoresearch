@@ -38,6 +38,9 @@ Ask (or infer from context):
 hf auth whoami
 
 # Inspect the base model — architecture, size, tags, config
+# IMPORTANT: Check pipeline_tag in the output. If it says "image-text-to-text"
+# the model is a VLM (vision-language model). For text-only tasks, prefer a
+# text-only model (pipeline_tag "text-generation") to avoid wasting parameters.
 hf models info <model_id>
 
 # If user is unsure about the base model, search for candidates
