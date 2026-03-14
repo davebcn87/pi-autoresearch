@@ -1302,6 +1302,14 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         text += `\n📝 Git: skipped commit (${params.status}) — revert with git checkout -- .`;
       }
 
+      // Doc update reminder (every 10 experiments or on keep)
+      const totalExperiments = state.results.length;
+      const shouldRemindDoc = totalExperiments % 10 === 0 || params.status === "keep";
+      if (shouldRemindDoc) {
+        text += `\n\n📝 Doc reminder: update autotrain.md "What's Been Tried" and commit it.`;
+        text += `\n   git add autotrain.md && git commit -m "doc: update session notes"`;
+      }
+
       // Persist to autoresearch.jsonl AFTER git commit (so commit hash is correct)
       try {
         const jsonlPath = path.join(ctx.cwd, "autoresearch.jsonl");

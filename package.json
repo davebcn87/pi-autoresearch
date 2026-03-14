@@ -1,7 +1,7 @@
 {
-  "name": "pi-autoresearch",
+  "name": "pi-autotrain",
   "version": "1.0.0",
-  "description": "Autonomous experiment loop for pi — run, measure, keep or discard. Inspired by karpathy/autoresearch.",
+  "description": "Autonomous fine-tuning loop for pi — detect hardware, pick framework, curate data, train LoRA adapters, optimize through structured phases.",
   "keywords": [
     "pi-package"
   ],
