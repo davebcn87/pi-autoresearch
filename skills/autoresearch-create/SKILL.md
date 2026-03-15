@@ -11,15 +11,17 @@ Autonomous experiment loop: try ideas, keep what works, discard what doesn't, ne
 
 - **`init_experiment`** — configure session (name, metric, unit, direction). Call again to re-initialize with a new baseline when the optimization target changes.
 - **`run_experiment`** — runs command, times it, captures output.
-- **`log_experiment`** — records result. `keep` auto-commits. `discard`/`crash`/`checks_failed` → `git checkout -- .` to revert. Always include secondary `metrics` dict. Dashboard: ctrl+x.
+- **`log_experiment`** — records result. `keep` auto-commits. `discard`/`crash`/`checks_failed` auto-reverts the working tree. Always include secondary `metrics` dict. Dashboard: ctrl+x.
 
 ## Setup
 
 1. Ask (or infer): **Goal**, **Command**, **Metric** (+ direction), **Files in scope**, **Constraints**.
-2. `git checkout -b autoresearch/<goal>-<date>`
+2. The extension creates an isolated git worktree with a branch for you. **Do NOT create a branch yourself** — it already exists. All your file operations and commands run in this worktree automatically, keeping the user's main working directory untouched.
 3. Read the source files. Understand the workload deeply before writing anything.
 4. Write `autoresearch.md` and `autoresearch.sh` (see below). Commit both.
 5. `init_experiment` → run baseline → `log_experiment` → start looping immediately.
+
+> **Worktree isolation**: Your experiments run in a separate git worktree. The user can continue working in their main directory without conflicts. All files you create (`autoresearch.md`, `autoresearch.sh`, etc.) live in the worktree. Check the system prompt for the exact worktree path.
 
 ### `autoresearch.md`
 

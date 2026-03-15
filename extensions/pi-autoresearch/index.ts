@@ -60,6 +60,7 @@ interface ExperimentState {
 }
 
 interface RunDetails {
+  runId: number;
   command: string;
   exitCode: number | null;
   durationSeconds: number;
@@ -494,8 +495,10 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   let experimentsThisSession = 0; // reset on agent_start, incremented on log_experiment
   let autoResumeTurns = 0;
 
-  // Track last run's checks result so log_experiment can gate "keep" status
-  let lastRunChecks: { pass: boolean; output: string; duration: number } | null = null;
+  // Track last run's checks result so log_experiment can gate "keep" status.
+  // runId correlates a run_experiment call to its log_experiment call.
+  let lastRunId = 0;
+  let lastRunChecks: { runId: number; pass: boolean; output: string; duration: number } | null = null;
 
   // Running experiment state (for spinner in fullscreen overlay)
   let runningExperiment: { startedAt: number; command: string } | null = null;
@@ -503,6 +506,168 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   let spinnerInterval: ReturnType<typeof setInterval> | null = null;
   let spinnerFrame = 0;
   const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+  // Worktree isolation
+  let worktreePath: string | null = null;
+  let worktreeBranch: string | null = null;
+
+  /** Returns the worktree path if active, otherwise ctx.cwd */
+  const arCwd = (ctx: ExtensionContext): string => worktreePath ?? ctx.cwd;
+
+  /** Slugify a string for use in branch/directory names */
+  function slugify(s: string): string {
+    const result = s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
+    return result || "experiment"; // fallback for empty/all-special-char input
+  }
+
+  const WORKTREE_BASE = ".autoresearch-worktrees";
+  const WORKTREE_META = ".active.json";
+
+  interface WorktreeMeta {
+    path: string;
+    branch: string;
+    createdAt: string;
+  }
+
+  /** Read worktree metadata from the persistent .active.json file */
+  function readWorktreeMeta(ctx: ExtensionContext): WorktreeMeta | null {
+    try {
+      const metaPath = path.join(ctx.cwd, WORKTREE_BASE, WORKTREE_META);
+      if (!fs.existsSync(metaPath)) return null;
+      return JSON.parse(fs.readFileSync(metaPath, "utf-8"));
+    } catch {
+      return null;
+    }
+  }
+
+  /** Write worktree metadata to the persistent .active.json file */
+  function writeWorktreeMeta(ctx: ExtensionContext, meta: WorktreeMeta | null): void {
+    const metaPath = path.join(ctx.cwd, WORKTREE_BASE, WORKTREE_META);
+    try {
+      if (meta === null) {
+        if (fs.existsSync(metaPath)) fs.unlinkSync(metaPath);
+      } else {
+        fs.mkdirSync(path.join(ctx.cwd, WORKTREE_BASE), { recursive: true });
+        fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2) + "\n");
+      }
+    } catch {
+      // Best-effort persistence
+    }
+  }
+
+  /** Ensure .autoresearch-worktrees is in the project's .gitignore */
+  function ensureGitignore(ctx: ExtensionContext): void {
+    const gitignorePath = path.join(ctx.cwd, ".gitignore");
+    try {
+      const content = fs.existsSync(gitignorePath)
+        ? fs.readFileSync(gitignorePath, "utf-8")
+        : "";
+      const lines = content.split("\n").map((l) => l.trim());
+      if (!lines.some((l) => l === WORKTREE_BASE || l === `${WORKTREE_BASE}/`)) {
+        const line = `\n# autoresearch worktrees\n${WORKTREE_BASE}/\n`;
+        fs.appendFileSync(gitignorePath, line);
+      }
+    } catch {
+      // Best-effort — user can add it manually
+    }
+  }
+
+  /** Create or reuse a git worktree for autoresearch */
+  async function createWorktree(ctx: ExtensionContext, branchName: string): Promise<{ ok: boolean; error?: string }> {
+    const wtBase = path.join(ctx.cwd, WORKTREE_BASE);
+    const dirName = branchName.replace(/\//g, "-");
+    const wtPath = path.join(wtBase, dirName);
+
+    // Already using this worktree
+    if (worktreePath === wtPath) return { ok: true };
+
+    // Check if the worktree directory already exists and is valid
+    if (fs.existsSync(path.join(wtPath, ".git"))) {
+      worktreePath = wtPath;
+      worktreeBranch = branchName;
+      writeWorktreeMeta(ctx, { path: wtPath, branch: branchName, createdAt: new Date().toISOString() });
+      return { ok: true };
+    }
+
+    // Ensure base directory exists
+    try {
+      fs.mkdirSync(wtBase, { recursive: true });
+    } catch (e) {
+      return { ok: false, error: `Failed to create worktree base directory: ${e instanceof Error ? e.message : String(e)}` };
+    }
+
+    // Ensure .gitignore entry
+    ensureGitignore(ctx);
+
+    // Clean up stale worktree entry if directory was removed but git still tracks it
+    await pi.exec("git", ["worktree", "prune"], { cwd: ctx.cwd, timeout: 5000 }).catch(() => {});
+
+    // Check if the branch is already checked out somewhere (git constraint)
+    const branchCheck = await pi.exec("git", ["worktree", "list", "--porcelain"], { cwd: ctx.cwd, timeout: 5000 });
+    if (branchCheck.code === 0 && branchCheck.stdout.includes(`branch refs/heads/${branchName}`)) {
+      return { ok: false, error: `Branch '${branchName}' is already checked out in another worktree. Use '/autoresearch off' first or choose a different name.` };
+    }
+
+    // Try creating worktree with new branch from HEAD
+    const result = await pi.exec("git", ["worktree", "add", "-b", branchName, wtPath, "HEAD"], {
+      cwd: ctx.cwd,
+      timeout: 15000,
+    });
+
+    if (result.code !== 0) {
+      // Branch may already exist — try attaching to it
+      const retry = await pi.exec("git", ["worktree", "add", wtPath, branchName], {
+        cwd: ctx.cwd,
+        timeout: 15000,
+      });
+      if (retry.code !== 0) {
+        return { ok: false, error: `git worktree add failed: ${(retry.stdout + "\n" + retry.stderr).trim()}` };
+      }
+    }
+
+    worktreePath = wtPath;
+    worktreeBranch = branchName;
+    writeWorktreeMeta(ctx, { path: wtPath, branch: branchName, createdAt: new Date().toISOString() });
+    return { ok: true };
+  }
+
+  /** Remove the active worktree (keeps the branch for history) */
+  async function removeWorktree(ctx: ExtensionContext, force: boolean = false): Promise<void> {
+    if (!worktreePath) return;
+
+    const wtPath = worktreePath;
+
+    try {
+      const args = ["worktree", "remove", wtPath];
+      if (force) args.push("--force");
+      await pi.exec("git", args, { cwd: ctx.cwd, timeout: 15000 });
+    } catch {
+      // If remove fails, at least prune stale entries
+      await pi.exec("git", ["worktree", "prune"], { cwd: ctx.cwd, timeout: 5000 }).catch(() => {});
+    }
+
+    // Clear state AFTER removal attempt (so arCwd still works during removal)
+    worktreePath = null;
+    worktreeBranch = null;
+    writeWorktreeMeta(ctx, null);
+  }
+
+  /** Rediscover an existing autoresearch worktree from metadata file */
+  function rediscoverWorktree(ctx: ExtensionContext): void {
+    if (worktreePath) return;
+
+    const meta = readWorktreeMeta(ctx);
+    if (!meta) return;
+
+    // Validate the worktree still exists on disk
+    if (fs.existsSync(path.join(meta.path, ".git"))) {
+      worktreePath = meta.path;
+      worktreeBranch = meta.branch;
+    } else {
+      // Metadata is stale — clean it up
+      writeWorktreeMeta(ctx, null);
+    }
+  }
 
   let state: ExperimentState = {
     results: [],
@@ -517,11 +682,12 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
   const autoresearchHelp = () =>
     [
-      "Usage: /autoresearch [off|clear|<text>]",
+      "Usage: /autoresearch [done|off|clear|<text>]",
       "",
-      "<text> enters autoresearch mode and starts or resumes the loop.",
-      "off leaves autoresearch mode.",
-      "clear deletes autoresearch.jsonl and leaves autoresearch mode.",
+      "<text>  creates an isolated git worktree, enters autoresearch mode, and starts the loop.",
+      "done   finalizes: removes session files, cleans up worktree, leaves a pushable branch.",
+      "off    pauses autoresearch mode (worktree preserved on disk for later).",
+      "clear  removes the worktree and all state (destructive).",
       "",
       "Examples:",
       "  /autoresearch optimize unit test runtime, monitor correctness",
@@ -548,8 +714,11 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       currentSegment: 0,
     };
 
+    // Rediscover worktree if we lost it (e.g. session restart)
+    rediscoverWorktree(ctx);
+
     // Primary: read from autoresearch.jsonl (alongside autoresearch.md/sh)
-    const jsonlPath = path.join(ctx.cwd, "autoresearch.jsonl");
+    const jsonlPath = path.join(arCwd(ctx), "autoresearch.jsonl");
     let loadedFromJsonl = false;
     try {
       if (fs.existsSync(jsonlPath)) {
@@ -586,9 +755,11 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
             for (const name of Object.keys(entry.metrics ?? {})) {
               if (!state.secondaryMetrics.find((m) => m.name === name)) {
                 let unit = "";
-                if (name.endsWith("_µs") || name.includes("µs")) unit = "µs";
-                else if (name.endsWith("_ms") || name.includes("ms")) unit = "ms";
-                else if (name.endsWith("_s") || name.includes("sec")) unit = "s";
+                if (name.endsWith("_µs") || name.endsWith("µs")) unit = "µs";
+                else if (name.endsWith("_ms")) unit = "ms";
+                else if (name.endsWith("_s") || name.endsWith("_sec")) unit = "s";
+                else if (name.endsWith("_kb")) unit = "kb";
+                else if (name.endsWith("_mb")) unit = "mb";
                 state.secondaryMetrics.push({ name, unit });
               }
             }
@@ -627,7 +798,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     }
 
     // Auto-enter autoresearch mode only when a persisted experiment log exists
-    autoresearchMode = fs.existsSync(path.join(ctx.cwd, "autoresearch.jsonl"));
+    autoresearchMode = fs.existsSync(path.join(arCwd(ctx), "autoresearch.jsonl"));
 
     updateWidget(ctx);
   };
@@ -782,7 +953,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
     // Auto-continue: send a message to resume the loop
     // The agent reads autoresearch.md on startup which has all context
-    const ideasPath = path.join(ctx.cwd, "autoresearch.ideas.md");
+    const ideasPath = path.join(arCwd(ctx), "autoresearch.ideas.md");
     const hasIdeas = fs.existsSync(ideasPath);
 
     let resumeMsg = "Autoresearch loop ended (likely context limit). Resume the experiment loop — read autoresearch.md and git log for context.";
@@ -800,11 +971,12 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   pi.on("before_agent_start", async (event, ctx) => {
     if (!autoresearchMode) return;
 
-    const mdPath = path.join(ctx.cwd, "autoresearch.md");
-    const ideasPath = path.join(ctx.cwd, "autoresearch.ideas.md");
+    const cwd = arCwd(ctx);
+    const mdPath = path.join(cwd, "autoresearch.md");
+    const ideasPath = path.join(cwd, "autoresearch.ideas.md");
     const hasIdeas = fs.existsSync(ideasPath);
 
-    const checksPath = path.join(ctx.cwd, "autoresearch.checks.sh");
+    const checksPath = path.join(cwd, "autoresearch.checks.sh");
     const hasChecks = fs.existsSync(checksPath);
 
     let extra =
@@ -815,6 +987,24 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       "\nWrite promising but deferred optimizations as bullet points to autoresearch.ideas.md — don't let good ideas get lost." +
       `\n${BENCHMARK_GUARDRAIL}` +
       "\nIf the user sends a follow-on message while an experiment is running, finish the current run_experiment + log_experiment cycle first, then address their message in the next iteration.";
+
+    if (worktreePath) {
+      extra +=
+        `\n\n## Worktree Isolation (ACTIVE)` +
+        `\n⚠️ CRITICAL: All file operations MUST use absolute paths rooted at the worktree: ${worktreePath}` +
+        `\nThe user's main directory is ${ctx.cwd} — you MUST NOT read, write, or edit any files there.` +
+        `\nEvery file path you use in Read, Write, Edit, and Bash tools must start with: ${worktreePath}/` +
+        `\nExamples of CORRECT paths:` +
+        `\n  ${worktreePath}/autoresearch.md` +
+        `\n  ${worktreePath}/src/index.ts` +
+        `\n  ${worktreePath}/autoresearch.sh` +
+        `\nExamples of WRONG paths (these modify the user's working directory!):` +
+        `\n  ${ctx.cwd}/src/index.ts` +
+        `\n  src/index.ts` +
+        `\n  ./autoresearch.md` +
+        `\nDo NOT create a branch — it already exists in the worktree.` +
+        `\nNote: The worktree contains a checkout of HEAD at creation time. Uncommitted changes from the main directory are not included.`;
+    }
 
     if (hasChecks) {
       extra +=
@@ -854,8 +1044,6 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     parameters: InitParams,
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const isReinit = state.results.length > 0;
-
       state.name = params.name;
       state.metricName = params.metric_name;
       state.metricUnit = params.metric_unit ?? "";
@@ -868,9 +1056,10 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       state.bestMetric = null;
       state.secondaryMetrics = [];
 
-      // Write config header to jsonl (append for re-init, create for first)
+      // Write config header to jsonl. Always append if file exists on disk
+      // (even if in-memory state was cleared by a prior init_experiment call).
       try {
-        const jsonlPath = path.join(ctx.cwd, "autoresearch.jsonl");
+        const jsonlPath = path.join(arCwd(ctx), "autoresearch.jsonl");
         const config = JSON.stringify({
           type: "config",
           name: state.name,
@@ -878,7 +1067,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
           metricUnit: state.metricUnit,
           bestDirection: state.bestDirection,
         });
-        if (isReinit) {
+        if (fs.existsSync(jsonlPath)) {
           fs.appendFileSync(jsonlPath, config + "\n");
         } else {
           fs.writeFileSync(jsonlPath, config + "\n");
@@ -896,7 +1085,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       autoresearchMode = true;
       updateWidget(ctx);
 
-      const reinitNote = isReinit ? " (re-initialized — previous results archived, new baseline needed)" : "";
+      const reinitNote = "";
       return {
         content: [{
           type: "text",
@@ -937,6 +1126,10 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       const timeout = (params.timeout_seconds ?? 600) * 1000;
+      const runId = ++lastRunId;
+
+      // Clear stale checks from any previous run
+      lastRunChecks = null;
 
       runningExperiment = { startedAt: Date.now(), command: params.command };
       if (overlayTui) overlayTui.requestRender();
@@ -953,7 +1146,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         result = await pi.exec("bash", ["-c", params.command], {
           signal,
           timeout,
-          cwd: ctx.cwd,
+          cwd: arCwd(ctx),
         });
       } finally {
         runningExperiment = null;
@@ -970,7 +1163,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       let checksOutput = "";
       let checksDuration = 0;
 
-      const checksPath = path.join(ctx.cwd, "autoresearch.checks.sh");
+      const checksPath = path.join(arCwd(ctx), "autoresearch.checks.sh");
       if (benchmarkPassed && fs.existsSync(checksPath)) {
         const checksTimeout = (params.checks_timeout_seconds ?? 300) * 1000;
         const ct0 = Date.now();
@@ -978,7 +1171,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
           const checksResult = await pi.exec("bash", [checksPath], {
             signal,
             timeout: checksTimeout,
-            cwd: ctx.cwd,
+            cwd: arCwd(ctx),
           });
           checksDuration = (Date.now() - ct0) / 1000;
           checksTimedOut = !!checksResult.killed;
@@ -991,13 +1184,14 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         }
       }
 
-      // Store checks result for log_experiment gate
-      lastRunChecks = checksPass !== null ? { pass: checksPass, output: checksOutput, duration: checksDuration } : null;
+      // Store checks result for log_experiment gate (with runId for correlation)
+      lastRunChecks = checksPass !== null ? { runId, pass: checksPass, output: checksOutput, duration: checksDuration } : null;
 
       // Overall pass: benchmark must pass AND checks must pass (if they ran)
       const passed = benchmarkPassed && (checksPass === null || checksPass);
 
       const details: RunDetails = {
+        runId,
         command: params.command,
         exitCode: result.code,
         durationSeconds,
@@ -1146,8 +1340,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       "Log experiment result (commit, metric, status, description)",
     promptGuidelines: [
       "Always call log_experiment after run_experiment to record the result.",
-      "After run_experiment, always call log_experiment to record the result.",
-      "log_experiment automatically runs git add -A && git commit with the description and a Result trailer. Do NOT commit manually before calling log_experiment.",
+      "log_experiment automatically stages, commits (on keep), or reverts (on discard/crash/checks_failed). Do NOT commit or revert manually before calling log_experiment.",
       "Use status 'keep' if the PRIMARY metric improved. 'discard' if worse or unchanged. 'crash' if it failed. Secondary metrics are for monitoring — they almost never affect keep/discard. Only discard a primary improvement if a secondary metric degraded catastrophically, and explain why in the description.",
       "If you discover complex but promising optimizations you won't pursue immediately, append them as bullet points to autoresearch.ideas.md. Don't let good ideas get lost.",
     ],
@@ -1156,8 +1349,8 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const secondaryMetrics = params.metrics ?? {};
 
-      // Gate: prevent "keep" when last run's checks failed
-      if (params.status === "keep" && lastRunChecks && !lastRunChecks.pass) {
+      // Gate: prevent "keep" when last run's checks failed (correlate via runId)
+      if (params.status === "keep" && lastRunChecks && lastRunChecks.runId === lastRunId && !lastRunChecks.pass) {
         return {
           content: [{
             type: "text",
@@ -1214,9 +1407,11 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       for (const name of Object.keys(secondaryMetrics)) {
         if (!state.secondaryMetrics.find((m) => m.name === name)) {
           let unit = "";
-          if (name.endsWith("_µs") || name.includes("µs")) unit = "µs";
-          else if (name.endsWith("_ms") || name.includes("ms")) unit = "ms";
-          else if (name.endsWith("_s") || name.includes("sec")) unit = "s";
+          if (name.endsWith("_µs") || name.endsWith("µs")) unit = "µs";
+          else if (name.endsWith("_ms")) unit = "ms";
+          else if (name.endsWith("_s") || name.endsWith("_sec")) unit = "s";
+          else if (name.endsWith("_kb")) unit = "kb";
+          else if (name.endsWith("_mb")) unit = "mb";
           state.secondaryMetrics.push({ name, unit });
         }
       }
@@ -1271,40 +1466,65 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
           const trailerJson = JSON.stringify(resultData);
           const commitMsg = `${params.description}\n\nResult: ${trailerJson}`;
 
-          const gitResult = await pi.exec("bash", ["-c",
-            `git add -A && git diff --cached --quiet && echo "NOTHING_TO_COMMIT" || git commit -m ${JSON.stringify(commitMsg)}`
-          ], { cwd: ctx.cwd, timeout: 10000 });
+          // Stage tracked + new files (respects .gitignore). Using `git add .` in worktree
+          // is safe because the worktree is an isolated checkout with only experiment changes.
+          const execOpts = { cwd: arCwd(ctx), timeout: 10000 };
+          await pi.exec("git", ["add", "."], execOpts);
 
-          const gitOutput = (gitResult.stdout + gitResult.stderr).trim();
-          if (gitOutput.includes("NOTHING_TO_COMMIT")) {
+          // Check if there's anything staged
+          const diffResult = await pi.exec("git", ["diff", "--cached", "--quiet"], execOpts);
+          if (diffResult.code === 0) {
             text += `\n📝 Git: nothing to commit (working tree clean)`;
-          } else if (gitResult.code === 0) {
-            const firstLine = gitOutput.split("\n")[0] || "";
-            text += `\n📝 Git: committed — ${firstLine}`;
-
-            // Update experiment record with the actual new commit hash
-            try {
-              const shaResult = await pi.exec("git", ["rev-parse", "--short=7", "HEAD"], { cwd: ctx.cwd, timeout: 5000 });
-              const newSha = (shaResult.stdout || "").trim();
-              if (newSha && newSha.length >= 7) {
-                experiment.commit = newSha;
-              }
-            } catch {
-              // Keep the original commit hash if rev-parse fails
-            }
           } else {
-            text += `\n⚠️ Git commit failed (exit ${gitResult.code}): ${gitOutput.slice(0, 200)}`;
+            // Commit using git directly (not bash) to avoid shell injection via commit message
+            const gitResult = await pi.exec("git", ["commit", "-m", commitMsg], execOpts);
+            const gitOutput = (gitResult.stdout + gitResult.stderr).trim();
+            if (gitResult.code === 0) {
+              const firstLine = gitOutput.split("\n")[0] || "";
+              text += `\n📝 Git: committed — ${firstLine}`;
+
+              // Update experiment record with the actual new commit hash
+              try {
+                const shaResult = await pi.exec("git", ["rev-parse", "--short=7", "HEAD"], { cwd: arCwd(ctx), timeout: 5000 });
+                const newSha = (shaResult.stdout || "").trim();
+                if (newSha && newSha.length >= 7) {
+                  experiment.commit = newSha;
+                }
+              } catch {
+                // Keep the original commit hash if rev-parse fails
+              }
+            } else {
+              text += `\n⚠️ Git commit failed (exit ${gitResult.code}): ${gitOutput.slice(0, 200)}`;
+            }
           }
         } catch (e) {
           text += `\n⚠️ Git commit error: ${e instanceof Error ? e.message : String(e)}`;
         }
       } else {
-        text += `\n📝 Git: skipped commit (${params.status}) — revert with git checkout -- .`;
+        // Auto-revert working tree on discard/crash/checks_failed.
+        // Use git checkout to restore tracked files, and git clean to remove
+        // untracked files EXCEPT the autoresearch session files.
+        try {
+          const revertCwd = arCwd(ctx);
+          await pi.exec("git", ["checkout", "--", "."], { cwd: revertCwd, timeout: 10000 });
+          // Clean untracked files but exclude session files that may not be committed yet
+          await pi.exec("git", [
+            "clean", "-fd",
+            "-e", "autoresearch.md",
+            "-e", "autoresearch.sh",
+            "-e", "autoresearch.checks.sh",
+            "-e", "autoresearch.jsonl",
+            "-e", "autoresearch.ideas.md",
+          ], { cwd: revertCwd, timeout: 10000 });
+          text += `\n📝 Git: reverted working tree (${params.status})`;
+        } catch (e) {
+          text += `\n⚠️ Git: revert error: ${e instanceof Error ? e.message : String(e)}`;
+        }
       }
 
       // Persist to autoresearch.jsonl AFTER git commit (so commit hash is correct)
       try {
-        const jsonlPath = path.join(ctx.cwd, "autoresearch.jsonl");
+        const jsonlPath = path.join(arCwd(ctx), "autoresearch.jsonl");
         fs.appendFileSync(jsonlPath, JSON.stringify({
           run: state.results.length,
           ...experiment,
@@ -1362,8 +1582,6 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         theme.fg(color, `${icon} `) +
         theme.fg("accent", `#${s.results.length}`);
 
-
-
       text += " " + theme.fg("muted", exp.description);
 
       if (s.bestMetric !== null) {
@@ -1387,14 +1605,14 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   });
 
   // -----------------------------------------------------------------------
-  // Ctrl+R — toggle dashboard expand/collapse
+  // Ctrl+X — toggle dashboard expand/collapse
   // -----------------------------------------------------------------------
 
   pi.registerShortcut("ctrl+x", {
     description: "Toggle autoresearch dashboard",
     handler: async (ctx) => {
       if (state.results.length === 0) {
-        if (!autoresearchMode && !fs.existsSync(path.join(ctx.cwd, "autoresearch.md"))) {
+        if (!autoresearchMode && !fs.existsSync(path.join(arCwd(ctx), "autoresearch.md"))) {
           ctx.ui.notify("No experiments yet — run /autoresearch to get started", "info");
         } else {
           ctx.ui.notify("No experiments yet", "info");
@@ -1515,7 +1733,9 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
             handleInput(data: string): void {
               const termH = process.stdout.rows || 40;
               const viewportRows = Math.max(4, termH - 4);
-              const totalRows = state.results.length + (runningExperiment ? 1 : 0) + 15; // rough estimate
+              // Compute actual content height to match render()
+              const actualContent = renderDashboardLines(state, process.stdout.columns || 120, theme, 0);
+              const totalRows = actualContent.length + (runningExperiment ? 1 : 0);
               const maxScroll = Math.max(0, totalRows - viewportRows);
 
               if (matchesKey(data, "escape") || data === "q") {
@@ -1576,16 +1796,40 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         return;
       }
 
-      if (command === "off") {
-        autoresearchMode = false;
-        autoResumeTurns = 0;
-        experimentsThisSession = 0;
-        ctx.ui.notify("Autoresearch mode OFF", "info");
-        return;
-      }
+      if (command === "done") {
+        if (!worktreePath || !worktreeBranch) {
+          ctx.ui.notify("No active autoresearch worktree to finalize.", "info");
+          return;
+        }
 
-      if (command === "clear") {
-        const jsonlPath = path.join(ctx.cwd, "autoresearch.jsonl");
+        const branch = worktreeBranch;
+        const wtPath = worktreePath;
+
+        // Remove session files from the worktree and commit the cleanup
+        const sessionFiles = [
+          "autoresearch.md",
+          "autoresearch.sh",
+          "autoresearch.checks.sh",
+          "autoresearch.jsonl",
+          "autoresearch.ideas.md",
+        ];
+        const toRemove = sessionFiles.filter((f) =>
+          fs.existsSync(path.join(wtPath, f))
+        );
+        if (toRemove.length > 0) {
+          await pi.exec("git", ["rm", "-f", "--ignore-unmatch", ...toRemove], {
+            cwd: wtPath,
+            timeout: 10000,
+          });
+          await pi.exec("git", ["commit", "-m", "Remove autoresearch session files"], {
+            cwd: wtPath,
+            timeout: 10000,
+          });
+        }
+
+        // Remove the worktree (branch stays in the repo)
+        await removeWorktree(ctx, true);
+
         autoresearchMode = false;
         autoResumeTurns = 0;
         experimentsThisSession = 0;
@@ -1601,26 +1845,110 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         };
         updateWidget(ctx);
 
-        if (fs.existsSync(jsonlPath)) {
-          fs.unlinkSync(jsonlPath);
-          ctx.ui.notify("Deleted autoresearch.jsonl and turned autoresearch mode OFF", "info");
-        } else {
-          ctx.ui.notify("No autoresearch.jsonl found. Autoresearch mode OFF", "info");
-        }
+        ctx.ui.notify(
+          `Autoresearch finalized. Branch '${branch}' is ready to push.\n` +
+          `  git push origin ${branch}\n` +
+          `  # or merge into your branch:\n` +
+          `  git merge ${branch}`,
+          "info"
+        );
         return;
+      }
+
+      if (command === "off") {
+        autoresearchMode = false;
+        autoResumeTurns = 0;
+        experimentsThisSession = 0;
+        // Keep the worktree on disk so the branch/history is preserved,
+        // but clear metadata so mode doesn't auto-re-enable on restart
+        const wtNote = worktreePath ? ` (worktree preserved at ${worktreePath})` : "";
+        worktreePath = null;
+        worktreeBranch = null;
+        writeWorktreeMeta(ctx, null);
+        ctx.ui.notify(`Autoresearch mode OFF${wtNote}`, "info");
+        return;
+      }
+
+      if (command === "clear") {
+        autoresearchMode = false;
+        autoResumeTurns = 0;
+        experimentsThisSession = 0;
+
+        // Remove worktree forcefully if active
+        const hadWorktree = !!worktreePath;
+        if (worktreePath) {
+          const jsonlPath = path.join(worktreePath, "autoresearch.jsonl");
+          if (fs.existsSync(jsonlPath)) fs.unlinkSync(jsonlPath);
+          await removeWorktree(ctx, true);
+        }
+
+        // Also clean up jsonl in main cwd (for non-worktree sessions)
+        const mainJsonl = path.join(ctx.cwd, "autoresearch.jsonl");
+        if (fs.existsSync(mainJsonl)) fs.unlinkSync(mainJsonl);
+
+        state = {
+          results: [],
+          bestMetric: null,
+          bestDirection: "lower",
+          metricName: "metric",
+          metricUnit: "",
+          secondaryMetrics: [],
+          name: null,
+          currentSegment: 0,
+        };
+        updateWidget(ctx);
+
+        ctx.ui.notify(
+          hadWorktree
+            ? "Removed worktree, deleted autoresearch.jsonl, autoresearch mode OFF"
+            : "Deleted autoresearch.jsonl and turned autoresearch mode OFF",
+          "info"
+        );
+        return;
+      }
+
+      // Create worktree for isolation
+      const dateStr = new Date().toISOString().slice(0, 10);
+      const branchName = `autoresearch/${slugify(trimmedArgs)}-${dateStr}`;
+
+      // Rediscover existing worktree first (e.g. resuming after restart)
+      rediscoverWorktree(ctx);
+
+      // If a worktree exists but for a different branch, remove the old one first
+      if (worktreePath && worktreeBranch && worktreeBranch !== branchName) {
+        // Check if the existing worktree has an autoresearch.md — if so, it's a real session
+        const existingMd = path.join(worktreePath, "autoresearch.md");
+        if (fs.existsSync(existingMd)) {
+          ctx.ui.notify(
+            `Existing autoresearch session found on branch '${worktreeBranch}'. ` +
+            `Run '/autoresearch off' first to preserve it, or '/autoresearch clear' to remove it.`,
+            "error"
+          );
+          return;
+        }
+        // No real session — safe to remove and create fresh
+        await removeWorktree(ctx, true);
+      }
+
+      if (!worktreePath) {
+        const wt = await createWorktree(ctx, branchName);
+        if (!wt.ok) {
+          ctx.ui.notify(`Failed to create worktree: ${wt.error}`, "error");
+          return;
+        }
       }
 
       autoresearchMode = true;
       autoResumeTurns = 0;
 
-      const mdPath = path.join(ctx.cwd, "autoresearch.md");
+      const mdPath = path.join(arCwd(ctx), "autoresearch.md");
       const hasRules = fs.existsSync(mdPath);
 
       if (hasRules) {
-        ctx.ui.notify("Autoresearch mode ON — rules loaded from autoresearch.md", "info");
+        ctx.ui.notify(`Autoresearch mode ON — worktree at ${worktreePath}`, "info");
         pi.sendUserMessage(`Autoresearch mode active. ${trimmedArgs} ${BENCHMARK_GUARDRAIL}`);
       } else {
-        ctx.ui.notify("Autoresearch mode ON — no autoresearch.md found, setting up", "info");
+        ctx.ui.notify(`Autoresearch mode ON — worktree at ${worktreePath}`, "info");
         pi.sendUserMessage(
           `Start autoresearch: ${trimmedArgs} ${BENCHMARK_GUARDRAIL}`
         );

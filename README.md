@@ -72,7 +72,7 @@ Then `/reload` in pi.
 /skill:autoresearch-create
 ```
 
-The agent asks about your goal, command, metric, and files in scope — or infers them from context. It then creates a branch, writes `autoresearch.md` and `autoresearch.sh`, runs the baseline, and starts looping immediately.
+The agent asks about your goal, command, metric, and files in scope — or infers them from context. The extension creates an isolated git worktree, the agent writes `autoresearch.md` and `autoresearch.sh`, runs the baseline, and starts looping immediately.
 
 ### 2. The loop
 
@@ -90,6 +90,24 @@ Every result is appended to `autoresearch.jsonl` in your project — one line pe
 - **Widget** — always visible above the editor
 - **`/autoresearch`** — full dashboard with results table and best run
 - **`Escape`** — interrupt anytime and ask for a summary
+
+### 4. Finish and push
+
+```
+/autoresearch done
+```
+
+This removes session files (`autoresearch.md`, `autoresearch.sh`, `autoresearch.jsonl`, etc.) from the branch, cleans up the worktree, and leaves a pushable branch:
+
+```bash
+git push origin autoresearch/optimize-speed-2026-03-15
+# or merge into your branch:
+git merge autoresearch/optimize-speed-2026-03-15
+```
+
+Other commands:
+- `/autoresearch off` — pause (worktree preserved, come back later)
+- `/autoresearch clear` — destroy everything (worktree + branch state)
 
 ---
 
@@ -119,6 +137,17 @@ The **extension** is domain-agnostic infrastructure. The **skill** encodes domai
 │                      │     │  ideas: pool, parallel…   │
 └──────────────────────┘     └──────────────────────────┘
 ```
+
+### Worktree isolation
+
+When you start autoresearch, the extension automatically creates a **git worktree** in `.autoresearch-worktrees/` so experiments run in an isolated copy of your repo. You can keep working in your main directory without conflicts — autoresearch commits, reverts, and file edits happen only inside the worktree.
+
+- The worktree is created from HEAD on a new branch (`autoresearch/<goal>-<date>`)
+- The extension auto-adds `.autoresearch-worktrees/` to your `.gitignore`
+- Worktree metadata is persisted to `.autoresearch-worktrees/.active.json` so sessions survive restarts
+- `/autoresearch off` preserves the worktree on disk (come back later)
+- `/autoresearch clear` removes the worktree and all state
+- Failed experiments are auto-reverted in the worktree — no manual cleanup needed
 
 Two files keep the session alive across restarts and context resets:
 
