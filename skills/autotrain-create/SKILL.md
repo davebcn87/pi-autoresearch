@@ -38,6 +38,8 @@ Ask (or infer from context):
 
 ```bash
 # Check who's logged in (needed for repo names later)
+# NOTE: output contains ANSI codes — strip them when capturing:
+# HF_USER=$(hf auth whoami 2>/dev/null | head -1 | sed 's/\x1b\[[0-9;]*m//g' | xargs)
 hf auth whoami
 
 # Inspect the base model — architecture, size, tags, config
@@ -59,6 +61,8 @@ hf datasets ls --search "code" --sort downloads --limit 10
 hf datasets ls --search "code instructions" --filter task_categories:text-generation
 
 # Explore dataset structure and size with SQL (DuckDB)
+# NOTE: hf datasets sql does NOT support HTTP wildcard globs (*.parquet).
+# List individual shard URLs with `hf datasets parquet` and pass them as an array.
 hf datasets parquet <dataset_id>  # list available parquet URLs
 hf datasets sql "SELECT COUNT(*) AS rows FROM read_parquet('<parquet_url>')"
 
@@ -98,7 +102,7 @@ Record the chosen flavor in `autotrain.md` so resuming agents reuse it. For HF J
 
 #### Local (alternative)
 
-Auto-detect hardware and record it in `autotrain.md`. For hardware detection logic, framework-specific configs (mlx-lm, unsloth, TRL+PEFT), and gotchas, see `references/local.md`.
+Auto-detect hardware and record it in `autotrain.md`. For hardware detection logic, framework-specific configs (mlx-lm, unsloth, TRL+PEFT), and **known gotchas** (e.g., mlx-lm Abort trap with combined train+test, eval-only baseline crashes, data format requirements), see `references/local.md`. Read it before writing any training code.
 
 ### Step 3: Create Branch
 

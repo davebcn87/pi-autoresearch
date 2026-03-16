@@ -56,6 +56,29 @@ mlx_lm.lora --model <model> --adapter-path ./adapters --data <data_dir> --test
 
 **Export:** Adapter only (safetensors). Use `mlx_lm.fuse` to merge into base model.
 
+### mlx-lm Gotchas (from real sessions)
+
+**Separate train and eval invocations.** Running `--train` and `--test` in a single `mlx_lm.lora` call can trigger `Abort trap: 6` (SIGABRT) due to memory accumulation across validation passes. Peak memory grows with each eval pass and can hit system limits. The fix:
+```bash
+# Train only
+mlx_lm.lora --model "$MODEL" --data ./data --train --adapter-path ./adapters ...
+
+# Evaluate separately
+mlx_lm.lora --model "$MODEL" --data ./data --test --adapter-path ./adapters ...
+```
+
+**Eval-only baseline (no adapter yet).** `mlx_lm.lora --test` tries to load adapters from `--adapter-path` (default `./adapters`). If no adapter exists yet, it crashes with a missing `adapter_config.json` error. For baseline eval without any adapter, pass `--adapter-path ""` explicitly.
+
+**Data directory format.** mlx-lm expects `train.jsonl`, `valid.jsonl`, `test.jsonl` in `--data <dir>`. Each line must be a JSON object with a `"messages"` key containing a chat-format array:
+```json
+{"messages": [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]}
+```
+The chat format must match the model's tokenizer chat template (e.g., Qwen uses `<|im_start|>`/`<|im_end|>` markers).
+
+**`generate()` API.** The `temp=` kwarg was removed from `generate()`. Use `sampler=make_sampler(temp=0.0)` from `mlx_lm.sample_utils` instead.
+
+**Invocation.** Use `mlx_lm.lora` (not `python -m mlx_lm.lora` which is deprecated). Alternatively: `python -m mlx_lm lora` (with a space, not a dot).
+
 ---
 
 ## unsloth (NVIDIA GPU)

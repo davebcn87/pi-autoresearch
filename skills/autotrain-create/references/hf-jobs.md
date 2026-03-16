@@ -40,7 +40,8 @@ Add paradigm-specific dependencies to the PEP 723 header (e.g., `trl`, `peft`, `
 #!/bin/bash
 set -euo pipefail
 
-HF_USER=$(hf auth whoami 2>/dev/null | head -1)
+# Strip ANSI color codes from hf auth output
+HF_USER=$(hf auth whoami 2>/dev/null | head -1 | sed 's/\x1b\[[0-9;]*m//g' | xargs)
 FLAVOR="${FLAVOR:-a10g-small}"
 
 hf jobs uv run \

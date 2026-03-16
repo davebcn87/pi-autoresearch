@@ -8,7 +8,8 @@
 
 ```bash
 # Get username for repo paths
-HF_USER=$(hf auth whoami 2>/dev/null | head -1)
+# NOTE: hf auth whoami output contains ANSI color codes — strip them
+HF_USER=$(hf auth whoami 2>/dev/null | head -1 | sed 's/\x1b\[[0-9;]*m//g' | xargs)
 
 # Create the output repo on the Hub (idempotent with --exist-ok)
 hf repos create ${HF_USER}/<model>-output --exist-ok
@@ -97,7 +98,9 @@ hf upload ${HF_USER}/<model>-output ./output/README.md README.md \
 | `hf jobs hardware` | List available hardware flavors and pricing |
 
 **Tips:**
-- Use `--format json` on list/info commands for machine-readable output
+- Use `--format json` on `ls` commands (e.g., `hf models ls`, `hf datasets ls`) for machine-readable output. Note: `--format` does NOT work on `info` commands — use `--expand` instead for verbose output.
 - Use `-q` / `--quiet` to suppress progress bars in scripts
 - Use `--include` / `--exclude` glob patterns to filter uploads/downloads
+- `hf datasets sql` does NOT support HTTP wildcard globs (e.g., `read_parquet('https://.../*.parquet')`). List individual shard URLs from `hf datasets parquet` and pass them as an array: `read_parquet(['url1', 'url2', ...])`
+- Always quote multi-word `--search` values: `--search "japanese instruction"` (not `--search japanese instruction`)
 - Run `hf <command> --help` for full options
