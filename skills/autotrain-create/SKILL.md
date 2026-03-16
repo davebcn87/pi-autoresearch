@@ -34,7 +34,7 @@ Ask (or infer from context):
 - **Execution mode** — **HF Jobs** (default, recommended) or **local**. HF Jobs gives access to A100/H200 GPUs billed per-second, no local GPU required. Local is fine for Apple Silicon or if the user has a local NVIDIA GPU and prefers not to use cloud.
 - **Constraints** — max training time, budget limits, must-not-touch files
 
-**Immediately inspect the model and dataset on the Hub:**
+**Immediately inspect the model and dataset on the Hub.** You must understand the model architecture before writing any training code — this prevents wasted time from wrong assumptions about chat templates, tokenizer behavior, target modules, or model type.
 
 ```bash
 # Check who's logged in (needed for repo names later)
@@ -43,9 +43,12 @@ Ask (or infer from context):
 hf auth whoami
 
 # Inspect the base model — architecture, size, tags, config
-# IMPORTANT: Check pipeline_tag in the output. If it says "image-text-to-text"
-# the model is a VLM (vision-language model). For text-only tasks, prefer a
-# text-only model (pipeline_tag "text-generation") to avoid wasting parameters.
+# CHECK THESE before writing any training code:
+#   - pipeline_tag: "text-generation" vs "image-text-to-text" (VLM) vs other
+#   - architecture: determines target_modules for LoRA, tokenizer behavior, chat template
+#   - config: context length, hidden size, num layers (informs LoRA num_layers, max_seq_length)
+# For text-only tasks, prefer a text-only model (pipeline_tag "text-generation")
+# to avoid wasting parameters on unused vision components.
 hf models info <model_id>
 
 # If user is unsure about the model, search for candidates
@@ -110,9 +113,15 @@ Auto-detect hardware and record it in `autotrain.md`. For hardware detection log
 git checkout -b autotrain/<goal>-<date>
 ```
 
-### Step 4: Read Source Files & Download Assets
+### Step 4: Read Source Files & Understand Model Architecture
 
 Read any existing training scripts and evaluation code **deeply** before writing anything.
+
+**Understand the model before writing training code.** After downloading or inspecting the model:
+- Check the **tokenizer chat template** — your data formatting must match it exactly (e.g., Qwen uses `<|im_start|>`/`<|im_end|>`, Llama uses `[INST]`/`[/INST]`)
+- Check **model architecture class** — determines LoRA target modules (e.g., `q_proj`, `v_proj` for most LLMs, but varies by architecture)
+- Check **config.json** — `max_position_embeddings` (context length), `hidden_size`, `num_hidden_layers` inform training parameters
+- If using a local framework, check what **data format** it expects (e.g., mlx-lm needs `{"messages": [...]}` JSONL — see `references/local.md`)
 
 **HF Jobs mode:** Model and dataset are loaded from the Hub **inside the remote job** at runtime (via `load_dataset()` / `from_pretrained()`). No need to download locally — but you still need to explore the data locally with SQL before writing code.
 
