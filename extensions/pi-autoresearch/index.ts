@@ -931,8 +931,6 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         };
       }
 
-      const isReinit = state.results.length > 0;
-
       state.name = params.name;
       state.metricName = params.metric_name;
       state.metricUnit = params.metric_unit ?? "";
@@ -958,7 +956,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
           metricUnit: state.metricUnit,
           bestDirection: state.bestDirection,
         });
-        if (isReinit) {
+        if (fs.existsSync(jsonlPath)) {
           fs.appendFileSync(jsonlPath, config + "\n");
         } else {
           fs.writeFileSync(jsonlPath, config + "\n");
@@ -976,7 +974,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       autoresearchMode = true;
       updateWidget(ctx);
 
-      const reinitNote = isReinit ? " (re-initialized — previous results archived, new baseline needed)" : "";
+      const reinitNote = "";
       const limitNote = state.maxExperiments !== null ? `\nMax iterations: ${state.maxExperiments} (from autoresearch.config.json)` : "";
       const workDirNote = workDir !== ctx.cwd ? `\nWorking directory: ${workDir}` : "";
       return {
@@ -1249,7 +1247,6 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       "Log experiment result (commit, metric, status, description)",
     promptGuidelines: [
       "Always call log_experiment after run_experiment to record the result.",
-      "After run_experiment, always call log_experiment to record the result.",
       "log_experiment automatically runs git add -A && git commit on 'keep', and auto-reverts code changes on 'discard'/'crash'/'checks_failed' (autoresearch files are preserved). Do NOT commit or revert manually.",
       "Use status 'keep' if the PRIMARY metric improved. 'discard' if worse or unchanged. 'crash' if it failed. Secondary metrics are for monitoring — they almost never affect keep/discard. Only discard a primary improvement if a secondary metric degraded catastrophically, and explain why in the description.",
       "If you discover complex but promising optimizations you won't pursue immediately, append them as bullet points to autoresearch.ideas.md. Don't let good ideas get lost.",
@@ -1495,8 +1492,6 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         theme.fg(color, `${icon} `) +
         theme.fg("accent", `#${s.results.length}`);
 
-
-
       text += " " + theme.fg("muted", exp.description);
 
       if (s.bestMetric !== null) {
@@ -1520,7 +1515,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   });
 
   // -----------------------------------------------------------------------
-  // Ctrl+R — toggle dashboard expand/collapse
+  // Ctrl+X — toggle dashboard expand/collapse
   // -----------------------------------------------------------------------
 
   pi.registerShortcut("ctrl+x", {
@@ -1648,7 +1643,8 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
             handleInput(data: string): void {
               const termH = process.stdout.rows || 40;
               const viewportRows = Math.max(4, termH - 4);
-              const totalRows = state.results.length + (runningExperiment ? 1 : 0) + 15; // rough estimate
+              const actualContent = renderDashboardLines(state, process.stdout.columns || 120, theme, 0);
+              const totalRows = actualContent.length + (runningExperiment ? 1 : 0);
               const maxScroll = Math.max(0, totalRows - viewportRows);
 
               if (matchesKey(data, "escape") || data === "q") {
