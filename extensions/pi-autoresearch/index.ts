@@ -59,6 +59,8 @@ interface ExperimentState {
   currentSegment: number;
   /** Maximum number of experiments before auto-stopping. null = unlimited. */
   maxExperiments: number | null;
+  /** Absolute path to the git worktree, if active. */
+  worktreePath: string | null;
 }
 
 interface RunDetails {
@@ -199,6 +201,10 @@ function currentResults(results: ExperimentResult[], segment: number): Experimen
 interface AutoresearchConfig {
   maxIterations?: number;
   workingDir?: string;
+  /** Set to false to disable automatic worktree creation. Default: true. */
+  useWorktree?: boolean;
+  /** Absolute path to the worktree. Auto-set by init_experiment. */
+  worktreePath?: string;
 }
 
 /** Read autoresearch.config.json from the given directory (always ctx.cwd) */
@@ -222,15 +228,63 @@ function readMaxExperiments(cwd: string): number | null {
 
 /**
  * Resolve the effective working directory.
- * Reads workingDir from autoresearch.config.json in ctxCwd.
- * Returns ctxCwd if not set. Supports relative (resolved against ctxCwd) and absolute paths.
+ * Priority: worktreePath (if exists) > workingDir > ctxCwd.
+ * Reads from autoresearch.config.json in ctxCwd.
  */
 function resolveWorkDir(ctxCwd: string): string {
   const config = readConfig(ctxCwd);
+
+  // Worktree path takes top priority (auto-set by init_experiment)
+  if (config.worktreePath) {
+    const wt = path.isAbsolute(config.worktreePath)
+      ? config.worktreePath
+      : path.resolve(ctxCwd, config.worktreePath);
+    try {
+      if (fs.statSync(wt).isDirectory()) return wt;
+    } catch {
+      // Worktree doesn't exist — fall through
+    }
+  }
+
   if (!config.workingDir) return ctxCwd;
   return path.isAbsolute(config.workingDir)
     ? config.workingDir
     : path.resolve(ctxCwd, config.workingDir);
+}
+
+/**
+ * Merge fields into autoresearch.config.json, preserving existing keys.
+ * Creates the file if it doesn't exist.
+ */
+function writeConfigFields(ctxCwd: string, fields: Partial<AutoresearchConfig>): void {
+  const configPath = path.join(ctxCwd, "autoresearch.config.json");
+  const existing = readConfig(ctxCwd);
+  const merged = { ...existing, ...fields };
+  fs.writeFileSync(configPath, JSON.stringify(merged, null, 2) + "\n");
+}
+
+/**
+ * Remove a field from autoresearch.config.json.
+ * Deletes the file if it becomes empty.
+ */
+function removeConfigField(ctxCwd: string, field: keyof AutoresearchConfig): void {
+  const configPath = path.join(ctxCwd, "autoresearch.config.json");
+  const existing = readConfig(ctxCwd);
+  delete existing[field];
+  if (Object.keys(existing).length === 0) {
+    try { fs.unlinkSync(configPath); } catch { /* ignore */ }
+  } else {
+    fs.writeFileSync(configPath, JSON.stringify(existing, null, 2) + "\n");
+  }
+}
+
+/** Sanitize a string into a valid git branch name suffix */
+function sanitizeBranchName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 50) || "session";
 }
 
 /**
@@ -571,6 +625,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     name: null,
     currentSegment: 0,
     maxExperiments: null,
+    worktreePath: null,
   };
 
   const autoresearchHelp = () =>
@@ -605,7 +660,23 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       name: null,
       currentSegment: 0,
       maxExperiments: null,
+      worktreePath: null,
     };
+
+    // Restore worktree path from config if it exists
+    const config = readConfig(ctx.cwd);
+    if (config.worktreePath) {
+      const wt = path.isAbsolute(config.worktreePath)
+        ? config.worktreePath
+        : path.resolve(ctx.cwd, config.worktreePath);
+      try {
+        if (fs.statSync(wt).isDirectory()) {
+          state.worktreePath = wt;
+        }
+      } catch {
+        // Worktree no longer exists — ignore
+      }
+    }
 
     // Resolve effective working directory (config stays in ctx.cwd, files in workDir)
     const workDir = resolveWorkDir(ctx.cwd);
@@ -853,6 +924,9 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     const hasIdeas = fs.existsSync(ideasPath);
 
     let resumeMsg = "Autoresearch loop ended (likely context limit). Resume the experiment loop — read autoresearch.md and git log for context.";
+    if (state.worktreePath) {
+      resumeMsg += ` Worktree is at ${state.worktreePath} — use absolute paths for bash/read/edit.`;
+    }
     if (hasIdeas) {
       resumeMsg += " Check autoresearch.ideas.md for promising paths to explore. Prune stale/tried ideas.";
     }
@@ -884,6 +958,16 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       `\n${BENCHMARK_GUARDRAIL}` +
       "\nIf the user sends a follow-on message while an experiment is running, finish the current run_experiment + log_experiment cycle first, then address their message in the next iteration.";
 
+    if (state.worktreePath) {
+      extra +=
+        "\n\n## Worktree (ACTIVE)" +
+        `\nAll experiment work happens in the worktree at: ${state.worktreePath}` +
+        "\nrun_experiment and log_experiment automatically use the worktree." +
+        "\nFor bash, read, and edit commands, use ABSOLUTE PATHS to the worktree." +
+        `\nExample: read ${state.worktreePath}/src/file.ts (not just src/file.ts)` +
+        "\nDo NOT modify files in the original repo directory — work exclusively in the worktree.";
+    }
+
     if (hasChecks) {
       extra +=
         "\n\n## Backpressure Checks (ACTIVE)" +
@@ -911,11 +995,13 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     name: "init_experiment",
     label: "Init Experiment",
     description:
-      "Initialize the experiment session. Call once before the first run_experiment to set the name, primary metric, unit, and direction. Writes the config header to autoresearch.jsonl.",
+      "Initialize the experiment session. Creates a git worktree on a new branch (by default), sets the name, primary metric, unit, and direction. Writes the config header to autoresearch.jsonl.",
     promptSnippet:
-      "Initialize experiment session (name, metric, unit, direction). Call once before first run.",
+      "Initialize experiment session (name, metric, unit, direction). Creates worktree + branch automatically. Call once before first run.",
     promptGuidelines: [
       "Call init_experiment exactly once at the start of an autoresearch session, before the first run_experiment.",
+      "Do NOT create a git branch manually — init_experiment creates a worktree on a new autoresearch/<name> branch automatically.",
+      "After init_experiment, use ABSOLUTE PATHS to the worktree for all bash/read/edit operations.",
       "If autoresearch.jsonl already exists with a config, do NOT call init_experiment again.",
       "If the optimization target changes (different benchmark, metric, or workload), call init_experiment again to insert a new config header and reset the baseline.",
     ],
@@ -947,7 +1033,74 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       // Read max experiments from config file (config always in ctx.cwd)
       state.maxExperiments = readMaxExperiments(ctx.cwd);
 
+      const arConfig = readConfig(ctx.cwd);
+      const useWorktree = arConfig.useWorktree !== false; // default: true
+      let worktreeNote = "";
+
+      // --- Worktree creation ---
+      // Skip if: worktree disabled, workingDir already set, re-init with existing worktree, or not a git repo
+      if (useWorktree && !arConfig.workingDir && !state.worktreePath) {
+        try {
+          // Find git root
+          const gitRootResult = await pi.exec("git", ["rev-parse", "--show-toplevel"], {
+            cwd: ctx.cwd, timeout: 5000,
+          });
+          const gitRoot = (gitRootResult.stdout || "").trim();
+
+          if (gitRoot && gitRootResult.code === 0) {
+            const repoName = path.basename(gitRoot);
+            const worktreePath = path.join(path.dirname(gitRoot), `${repoName}-autoresearch`);
+            const branchName = `autoresearch/${sanitizeBranchName(params.name)}`;
+
+            // Clean up stale worktree if path exists but git doesn't know about it
+            if (fs.existsSync(worktreePath)) {
+              await pi.exec("git", ["worktree", "remove", "--force", worktreePath], {
+                cwd: gitRoot, timeout: 10000,
+              });
+            }
+
+            // Try creating worktree with new branch
+            let wtResult = await pi.exec("git", ["worktree", "add", "-b", branchName, worktreePath], {
+              cwd: gitRoot, timeout: 15000,
+            });
+
+            // If branch already exists, try using it directly
+            if (wtResult.code !== 0) {
+              // Branch exists — try without -b
+              wtResult = await pi.exec("git", ["worktree", "add", worktreePath, branchName], {
+                cwd: gitRoot, timeout: 15000,
+              });
+            }
+
+            // If the branch is checked out in main worktree, create with a unique suffix
+            if (wtResult.code !== 0) {
+              const uniqueBranch = `${branchName}-${Date.now().toString(36).slice(-4)}`;
+              wtResult = await pi.exec("git", ["worktree", "add", "-b", uniqueBranch, worktreePath], {
+                cwd: gitRoot, timeout: 15000,
+              });
+            }
+
+            if (wtResult.code === 0) {
+              state.worktreePath = worktreePath;
+              // Persist worktree path to config so reconstruction can find it
+              writeConfigFields(ctx.cwd, { worktreePath });
+              worktreeNote = `\n🌳 Worktree: ${worktreePath}`;
+              worktreeNote += `\n   All experiment files, commands, and git operations happen here.`;
+              worktreeNote += `\n   Use absolute paths when running bash/read/edit in the worktree.`;
+            } else {
+              const err = (wtResult.stderr || wtResult.stdout || "").trim();
+              worktreeNote = `\n⚠️ Worktree creation failed (falling back to current directory): ${err.slice(0, 200)}`;
+            }
+          }
+        } catch (e) {
+          worktreeNote = `\n⚠️ Worktree creation failed (falling back to current directory): ${e instanceof Error ? e.message : String(e)}`;
+        }
+      } else if (state.worktreePath) {
+        worktreeNote = `\n🌳 Worktree (existing): ${state.worktreePath}`;
+      }
+
       // Write config header to jsonl (append for re-init, create for first)
+      // Uses resolveWorkDir which now picks up worktreePath from config
       const workDir = resolveWorkDir(ctx.cwd);
       try {
         const jsonlPath = path.join(workDir, "autoresearch.jsonl");
@@ -978,11 +1131,11 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
       const reinitNote = isReinit ? " (re-initialized — previous results archived, new baseline needed)" : "";
       const limitNote = state.maxExperiments !== null ? `\nMax iterations: ${state.maxExperiments} (from autoresearch.config.json)` : "";
-      const workDirNote = workDir !== ctx.cwd ? `\nWorking directory: ${workDir}` : "";
+      const workDirNote = !state.worktreePath && workDir !== ctx.cwd ? `\nWorking directory: ${workDir}` : "";
       return {
         content: [{
           type: "text",
-          text: `✅ Experiment initialized: "${state.name}"${reinitNote}\nMetric: ${state.metricName} (${state.metricUnit || "unitless"}, ${state.bestDirection} is better)${limitNote}${workDirNote}\nConfig written to autoresearch.jsonl. Now run the baseline with run_experiment.`,
+          text: `✅ Experiment initialized: "${state.name}"${reinitNote}\nMetric: ${state.metricName} (${state.metricUnit || "unitless"}, ${state.bestDirection} is better)${limitNote}${workDirNote}${worktreeNote}\nConfig written to autoresearch.jsonl. Now run the baseline with run_experiment.`,
         }],
         details: { state: { ...state } },
       };
@@ -1713,11 +1866,15 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         autoresearchMode = false;
         autoResumeTurns = 0;
         experimentsThisSession = 0;
-        ctx.ui.notify("Autoresearch mode OFF", "info");
+        const wtNote = state.worktreePath
+          ? ` Worktree preserved at ${state.worktreePath} — use /autoresearch clear to remove.`
+          : "";
+        ctx.ui.notify(`Autoresearch mode OFF.${wtNote}`, "info");
         return;
       }
 
       if (command === "clear") {
+        const worktreeToRemove = state.worktreePath;
         const jsonlPath = path.join(resolveWorkDir(ctx.cwd), "autoresearch.jsonl");
         autoresearchMode = false;
         autoResumeTurns = 0;
@@ -1731,15 +1888,37 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
           secondaryMetrics: [],
           name: null,
           currentSegment: 0,
+          maxExperiments: null,
+          worktreePath: null,
         };
         updateWidget(ctx);
 
         if (fs.existsSync(jsonlPath)) {
           fs.unlinkSync(jsonlPath);
-          ctx.ui.notify("Deleted autoresearch.jsonl and turned autoresearch mode OFF", "info");
-        } else {
-          ctx.ui.notify("No autoresearch.jsonl found. Autoresearch mode OFF", "info");
         }
+
+        // Clean up worktree
+        let worktreeMsg = "";
+        if (worktreeToRemove) {
+          try {
+            const gitRootResult = await pi.exec("git", ["rev-parse", "--show-toplevel"], {
+              cwd: ctx.cwd, timeout: 5000,
+            });
+            const gitRoot = (gitRootResult.stdout || "").trim();
+            if (gitRoot) {
+              await pi.exec("git", ["worktree", "remove", "--force", worktreeToRemove], {
+                cwd: gitRoot, timeout: 10000,
+              });
+              worktreeMsg = ` Removed worktree at ${worktreeToRemove}.`;
+            }
+          } catch {
+            worktreeMsg = ` ⚠️ Failed to remove worktree at ${worktreeToRemove} — remove manually.`;
+          }
+          // Remove worktreePath from config
+          removeConfigField(ctx.cwd, "worktreePath");
+        }
+
+        ctx.ui.notify(`Cleared autoresearch state and turned mode OFF.${worktreeMsg}`, "info");
         return;
       }
 

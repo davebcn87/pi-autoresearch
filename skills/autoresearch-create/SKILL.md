@@ -16,10 +16,10 @@ Autonomous experiment loop: try ideas, keep what works, discard what doesn't, ne
 ## Setup
 
 1. Ask (or infer): **Goal**, **Command**, **Metric** (+ direction), **Files in scope**, **Constraints**.
-2. `git checkout -b autoresearch/<goal>-<date>`
-3. Read the source files. Understand the workload deeply before writing anything.
-4. Write `autoresearch.md` and `autoresearch.sh` (see below). Commit both.
-5. `init_experiment` → run baseline → `log_experiment` → start looping immediately.
+2. **Do NOT create a branch manually.** Call `init_experiment` — it automatically creates a git worktree on a new `autoresearch/<name>` branch. All work happens in the worktree, leaving the user's checkout untouched.
+3. Read the source files in the worktree. Understand the workload deeply before writing anything.
+4. Write `autoresearch.md` and `autoresearch.sh` in the **worktree** (see below). Commit both. Use absolute paths for bash/read/edit.
+5. Run baseline → `log_experiment` → start looping immediately.
 
 ### `autoresearch.md`
 
@@ -63,12 +63,20 @@ Bash script (`set -euo pipefail`) that: pre-checks fast (syntax errors in <1s), 
 JSON config file that lives in the pi session's working directory (`ctx.cwd`). Supported fields:
 
 - **`maxIterations`** (number) — maximum experiments before auto-stopping.
-- **`workingDir`** (string) — override the directory for all autoresearch operations: file I/O (`autoresearch.jsonl`, `autoresearch.md`, `autoresearch.sh`, `autoresearch.checks.sh`, `autoresearch.ideas.md`), command execution, and git operations. Supports absolute paths or relative paths (resolved against `ctx.cwd`). The config file itself always stays in `ctx.cwd`. Fails if the directory doesn't exist.
+- **`useWorktree`** (boolean, default: `true`) — when true, `init_experiment` creates a git worktree on a new branch, isolating experiment work from the user's checkout. Set to `false` to work directly in the current directory (old behavior).
+- **`workingDir`** (string) — override the directory for all autoresearch operations. When set, worktree creation is skipped (you're opting into explicit directory control). Supports absolute or relative paths (resolved against `ctx.cwd`). The config file itself always stays in `ctx.cwd`.
+- **`worktreePath`** (string) — **auto-set by `init_experiment`**. Do not set manually. Points to the active worktree directory.
 
 ```json
 {
-  "workingDir": "/path/to/project",
   "maxIterations": 50
+}
+```
+
+To disable worktrees:
+```json
+{
+  "useWorktree": false
 }
 ```
 
