@@ -300,7 +300,7 @@ Update `autotrain.md` after every `keep` — especially the "What's Been Tried" 
 
 ### HF Jobs mode
 
-See `references/hf-jobs.md` for the full wrapper pattern. The wrapper submits `train.py` via `hf jobs uv run` with env vars for config.
+See `references/hf-jobs.md` for the full wrapper pattern. The wrapper submits `train.py` via `hf jobs uv run -d` (detached mode) with env vars for config, then polls for completion. NEVER use attached mode — it drops the connection on long jobs.
 
 ### Local mode
 
