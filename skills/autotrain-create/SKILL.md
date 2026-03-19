@@ -9,8 +9,15 @@ Autonomous training loop: gather requirements, prepare data or environments, tra
 
 ## Tools
 
-- **`init_experiment`** — configure session (name, metric, unit, direction). Call again to re-initialize with a new baseline when the optimization target changes.
-- **`run_experiment`** — runs command, times it, captures output.
+### Async (HF Jobs — recommended)
+- **`init_experiment`** — configure session (name, metric, unit, direction, optional `benchmark` for frozen eval contract). Call again to re-initialize.
+- **`submit_job`** — submits a detached HF Job. Returns immediately with job_id and experiment_id. Default stage: `smoke` (10-step validation). Use `stage="full"` after smoke passes.
+- **`check_jobs`** — polls all active jobs (or one by job_id). Returns status, elapsed, metrics (if completed), tail output.
+- **`cancel_job`** — cancels a running job. Refuses to cancel smoke under 120s.
+- **`log_decision`** — records keep/discard/crash/smoke_failed. Like `log_experiment` but also checks `benchmark.json` integrity on keep.
+
+### Synchronous (local fallback)
+- **`run_experiment`** — runs command synchronously, times it, captures output. Use for local mode or quick tasks.
 - **`log_experiment`** — records result. `keep` auto-commits. `discard`/`crash`/`checks_failed` → `git checkout -- .` to revert. Always include secondary `metrics` dict. Dashboard: ctrl+x.
 
 ## Setup
@@ -203,7 +210,23 @@ git commit -m "autotrain: initial session setup"
 
 ### Step 8: Start the Loop
 
-`init_experiment` → run baseline → `log_experiment` → start looping immediately.
+**HF Jobs (async, pipelined):**
+```
+init_experiment (with benchmark if applicable)
+→ submit_job(smoke, experiment A)
+→ while smoke runs: plan experiment B, write plan to autotrain.ideas.md
+→ check_jobs → smoke A passed
+→ submit_job(full, experiment_id=A)
+→ submit_job(smoke, experiment B)     ← pipeline: smoke B while full A trains
+→ while both run: 1-2 planning steps, then check_jobs, repeat
+→ check_jobs → full A completed
+→ log_decision(A)
+→ check_jobs → smoke B completed
+→ submit_job(full, experiment_id=B)
+→ loop
+```
+
+**Local (synchronous):** `init_experiment` → `run_experiment` baseline → `log_experiment` → start looping immediately.
 
 ---
 
@@ -273,8 +296,17 @@ Follow this order. Do NOT jump to Phase 4 before exhausting Phases 1-2.
 4. **Phase 4: Training Hyperparameters** — LR, steps, batch size, scheduler
 5. **Phase 5: Regularization** — only if overfitting is visible
 
+## Benchmark Contract
+<If using frozen benchmark, describe the contract here:>
+- **File**: `benchmark.json` (committed, do NOT modify)
+- **Primary metric**: <from init_experiment>
+- **Direction**: <lower/higher>
+- **Eval size**: <eval_n examples — treat +/-X% as ties>
+- **Seeds**: train=<X>, eval=<Y>, test=<Z>
+- **Acceptance threshold**: <minimum improvement to count as real>
+
 ## Anti-Thrash Rules
-1. 5+ consecutive discards → stop, write notes, pivot to a different phase
+1. 5+ consecutive failures (smoke_failed or discard) → stop, write notes, pivot to a different phase
 2. Same metric +/-noise for 8+ experiments → change something structural
 3. All current ideas are Phase 4 but Phase 1-3 not exhausted → go back up
 4. 20+ min without improvement → run fresh validation, accept or fundamentally pivot
@@ -461,11 +493,12 @@ When the test set is small, require larger improvements before calling a `keep`.
 
 These rules prevent wasted compute from unproductive experiment cycles:
 
-1. **5+ consecutive discards** → Stop. Write detailed notes about what you've tried. Pivot to a different phase entirely.
+1. **5+ consecutive failures (smoke_failed or discard)** → Stop. Write detailed notes about what you've tried. Pivot to a different phase entirely.
 2. **Same metric +/-noise for 8+ experiments** → The current approach is exhausted. Change something structural (different phase, different data strategy, different architecture).
 3. **All current ideas are Phase 4 but Phases 1-3 not exhausted** → Go back up. You're micro-optimizing when macro changes are still available.
 4. **20+ minutes without improvement** → Run fresh validation to check if recent "improvements" were noise. Either accept current state or make a fundamental pivot.
 5. **Track secondary metrics for overfitting signal** → If eval metrics diverge from train metrics (e.g., val_loss rising while accuracy improves, episode reward variance increasing), you're overfitting. Stop and investigate.
+6. **3-strike smoke rule** → If an experiment fails smoke 3 times consecutively, the extension blocks further smoke attempts. Fix the root cause or start a new experiment.
 
 ---
 
@@ -504,6 +537,11 @@ For full HF Hub integration details (session setup, uploads after every `keep`, 
 - **Fresh validation.** Every 10 experiments or after every keep, run a fresh validation check.
 - **HF integration.** After every `keep`, upload model output and sync session docs. See `references/hf-integration.md`.
 - **Resuming:** if `autotrain.md` exists, read it + git log, continue looping.
+- **Polling cadence:** Call `check_jobs` after every 2-3 other tool calls. If no planning work remains, call `check_jobs` directly. Do not busy-loop — always do at least one productive action between polls.
+- **No file edits during active full runs:** Do not modify training scripts while a full job is active. Make all code changes before `submit_job`. While jobs run, only update `autotrain.md`, `autotrain.ideas.md`, and do analysis.
+- **Within-phase parallelism only:** You may pipeline multiple experiments from the same phase. Do not submit Phase N+1 experiments until at least one Phase N full run has completed.
+- **Externalize plans before polling:** Before calling `check_jobs`, write your current experiment plan to `autotrain.ideas.md`. This survives context resets.
+- **Smoke failures count toward anti-thrash:** 5+ consecutive failures (smoke_failed or discard) → pivot phase.
 
 **NEVER STOP.** The user may be away for hours. Keep going until interrupted.
 

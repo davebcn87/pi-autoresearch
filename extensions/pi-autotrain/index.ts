@@ -26,6 +26,7 @@ import {
   visibleWidth,
 } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -127,6 +128,17 @@ const InitParams = Type.Object({
         'Whether "lower" or "higher" is better for the primary metric. Default: "lower".',
     }),
   ),
+  benchmark: Type.Optional(
+    Type.Object({
+      train_seed: Type.Number({ description: "RNG seed for training split" }),
+      eval_seed: Type.Number({ description: "Separate RNG seed for eval split" }),
+      test_seed: Type.Number({ description: "Separate RNG seed for test split" }),
+      eval_n: Type.Number({ description: "Number of eval examples" }),
+      test_n: Type.Optional(Type.Number({ description: "Number of test examples" })),
+      acceptance_threshold: Type.Optional(Type.Number({ description: "Minimum improvement to count as real. Default: 0.02" })),
+      guardrails: Type.Optional(Type.Array(Type.String(), { description: "Names of guardrail metrics to track" })),
+    }),
+  ),
 });
 
 const LogParams = Type.Object({
@@ -153,12 +165,49 @@ const LogParams = Type.Object({
   ),
 });
 
+const SubmitJobParams = Type.Object({
+  command: Type.String({
+    description: "Shell command to submit (typically ./autotrain.sh)",
+  }),
+  experiment_id: Type.Optional(
+    Type.Number({
+      description:
+        "Experiment ID to associate this job with. Required for stage='full' (must match a passed smoke). Auto-generated for smoke.",
+    }),
+  ),
+  stage: Type.Optional(
+    StringEnum(["smoke", "full"] as const, {
+      description:
+        'Job stage. "smoke" = 10-step validation. "full" = real training. Default: "smoke".',
+    }),
+  ),
+  timeout_seconds: Type.Optional(
+    Type.Number({
+      description: "Kill after this many seconds (default: 600)",
+    }),
+  ),
+});
+
+const CheckJobsParams = Type.Object({
+  job_id: Type.Optional(
+    Type.String({
+      description:
+        "Specific job ID to check. Omit to check all active jobs.",
+    }),
+  ),
+});
+
+const CancelJobParams = Type.Object({
+  job_id: Type.String({ description: "HF Job ID to cancel" }),
+  reason: Type.String({ description: "Why this job is being canceled" }),
+});
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 /** Format a number with comma-separated thousands: 15586 → "15,586" */
-function commas(n: number): string {
+export function commas(n: number): string {
   const s = String(Math.round(n));
   const parts: string[] = [];
   for (let i = s.length; i > 0; i -= 3) {
@@ -168,7 +217,7 @@ function commas(n: number): string {
 }
 
 /** Format number with commas, preserving one decimal for fractional values */
-function fmtNum(n: number, decimals: number = 0): string {
+export function fmtNum(n: number, decimals: number = 0): string {
   if (decimals > 0) {
     const int = Math.floor(Math.abs(n));
     const frac = (Math.abs(n) - int).toFixed(decimals).slice(1); // ".3"
@@ -186,7 +235,7 @@ function formatNum(value: number | null, unit: string): string {
   return fmtNum(value, 2) + u;
 }
 
-function isBetter(
+export function isBetter(
   current: number,
   best: number,
   direction: "lower" | "higher",
@@ -195,7 +244,7 @@ function isBetter(
 }
 
 /** Get results in the current segment only */
-function currentResults(
+export function currentResults(
   results: ExperimentResult[],
   segment: number,
 ): ExperimentResult[] {
@@ -203,7 +252,7 @@ function currentResults(
 }
 
 /** Baseline = first experiment in current segment */
-function findBaselineMetric(
+export function findBaselineMetric(
   results: ExperimentResult[],
   segment: number,
 ): number | null {
@@ -241,6 +290,177 @@ function findBaselineSecondary(
   }
 
   return base;
+}
+
+// ---------------------------------------------------------------------------
+// JSONL Parser
+// ---------------------------------------------------------------------------
+
+export type ParsedEntry =
+  | { kind: "config"; data: any }
+  | { kind: "result"; data: any }
+  | { kind: "job_submitted"; data: any }
+  | { kind: "job_completed"; data: any }
+  | { kind: "skip"; data?: undefined };
+
+export function parseJsonlLine(line: string): ParsedEntry {
+  try {
+    const entry = JSON.parse(line);
+    if (entry.type === "config") return { kind: "config", data: entry };
+    if (entry.type === "job_submitted") return { kind: "job_submitted", data: entry };
+    if (entry.type === "job_completed") return { kind: "job_completed", data: entry };
+    // Legacy result: no type field but has "run" field
+    if (!entry.type && entry.run !== undefined) return { kind: "result", data: entry };
+    // Unknown type → skip
+    return { kind: "skip" };
+  } catch {
+    return { kind: "skip" };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Async Job Types & Utilities
+// ---------------------------------------------------------------------------
+
+export interface JobInfo {
+  job_id: string;
+  experiment_id: number;
+  stage: "smoke" | "full";
+  command: string;
+  script_hash: string;
+  started_at: number;
+  poll_count: number;
+}
+
+export interface SmokeRegistryEntry {
+  passed: boolean;
+  script_hash: string;
+  job_id: string;
+  failures: number;
+  timestamp: number;
+}
+
+export function hashCommand(cmd: string): string {
+  return createHash("sha256").update(cmd).digest("hex");
+}
+
+// ---------------------------------------------------------------------------
+// Reconstruction Helpers (pure functions)
+// ---------------------------------------------------------------------------
+
+/**
+ * Rebuild activeJobs map from parsed JSONL entries.
+ * A job is active if it has a job_submitted entry with no matching job_completed.
+ */
+export function rebuildActiveJobs(
+  submitted: any[],
+  completed: any[],
+): Map<string, JobInfo> {
+  const completedIds = new Set(completed.map((c) => c.job_id));
+  const jobs = new Map<string, JobInfo>();
+  for (const s of submitted) {
+    if (!completedIds.has(s.job_id)) {
+      jobs.set(s.job_id, {
+        job_id: s.job_id,
+        experiment_id: s.experiment_id,
+        stage: s.stage,
+        command: s.command ?? "",
+        script_hash: s.script_hash ?? "",
+        started_at: s.timestamp ?? 0,
+        poll_count: 0,
+      });
+    }
+  }
+  return jobs;
+}
+
+/**
+ * Rebuild smoke registry from job_submitted and job_completed entries.
+ * Only smoke-stage entries contribute.
+ */
+export function rebuildSmokeRegistry(
+  submitted: any[],
+  completed: any[],
+): Map<number, SmokeRegistryEntry> {
+  const registry = new Map<number, SmokeRegistryEntry>();
+
+  // Initialize from submitted smoke entries
+  for (const s of submitted) {
+    if (s.stage !== "smoke") continue;
+    const existing = registry.get(s.experiment_id);
+    if (!existing) {
+      registry.set(s.experiment_id, {
+        passed: false,
+        script_hash: s.script_hash ?? "",
+        job_id: s.job_id,
+        failures: 0,
+        timestamp: s.timestamp ?? 0,
+      });
+    }
+  }
+
+  // Update from completed smoke entries
+  for (const c of completed) {
+    if (c.stage !== "smoke") continue;
+    const entry = registry.get(c.experiment_id);
+    if (!entry) continue;
+    if (c.status === "completed" && c.metrics) {
+      entry.passed = true;
+      entry.timestamp = c.timestamp ?? entry.timestamp;
+    } else {
+      entry.failures++;
+    }
+  }
+
+  return registry;
+}
+
+// ---------------------------------------------------------------------------
+// Status Mapping & Metric Parsing (pure functions for check_jobs)
+// ---------------------------------------------------------------------------
+
+/**
+ * Map HF Jobs uppercase status to our lowercase status.
+ * HF returns status at [0]['status']['stage'] with values like COMPLETED, ERROR, etc.
+ */
+export function mapHfStatus(
+  hfStatus: string,
+): "completed" | "error" | "canceled" | "timeout" | "running" {
+  switch (hfStatus) {
+    case "COMPLETED":
+      return "completed";
+    case "ERROR":
+      return "error";
+    case "CANCELED":
+      return "canceled";
+    case "TIMEOUT":
+      return "timeout";
+    default:
+      return "running";
+  }
+}
+
+/**
+ * Parse METRIC lines from job log output.
+ * Format: "METRIC name=value" — one per line.
+ * Returns null if no METRIC lines found.
+ */
+export function parseMetricLines(
+  logOutput: string,
+): Record<string, number> | null {
+  const metrics: Record<string, number> = {};
+  let found = false;
+  for (const line of logOutput.split("\n")) {
+    const match = line.match(/^METRIC\s+(\S+)=(\S+)/);
+    if (match) {
+      const value = parseFloat(match[2]);
+      if (!isNaN(value)) {
+        metrics[match[1]] = value;
+        found = true;
+      }
+    }
+  }
+  return found ? metrics : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -542,6 +762,11 @@ export default function autotrainExtension(pi: ExtensionAPI) {
     currentSegment: 0,
   };
 
+  // Async job tracking
+  let activeJobs: Map<string, JobInfo> = new Map();
+  let smokeRegistry: Map<number, SmokeRegistryEntry> = new Map();
+  let nextExperimentId = 1;
+
   const autotrainHelp = () =>
     [
       "Usage: /autotrain [off|clear|<text>]",
@@ -559,7 +784,7 @@ export default function autotrainExtension(pi: ExtensionAPI) {
   // State reconstruction
   // -----------------------------------------------------------------------
 
-  const reconstructState = (ctx: ExtensionContext) => {
+  const reconstructState = async (ctx: ExtensionContext) => {
     // Reset transient run state on session boundaries
     lastRunChecks = null;
     runningExperiment = null;
@@ -575,9 +800,17 @@ export default function autotrainExtension(pi: ExtensionAPI) {
       currentSegment: 0,
     };
 
+    // Reset async job state
+    activeJobs = new Map();
+    smokeRegistry = new Map();
+    nextExperimentId = 1;
+
     // Primary: read from autotrain.jsonl (alongside autotrain.md/sh)
     const jsonlPath = path.join(ctx.cwd, "autotrain.jsonl");
     let loadedFromJsonl = false;
+    const jobSubmitted: any[] = [];
+    const jobCompleted: any[] = [];
+
     try {
       if (fs.existsSync(jsonlPath)) {
         let segment = 0;
@@ -587,11 +820,11 @@ export default function autotrainExtension(pi: ExtensionAPI) {
           .split("\n")
           .filter(Boolean);
         for (const line of lines) {
-          try {
-            const entry = JSON.parse(line);
+          const parsed = parseJsonlLine(line);
 
-            // Config header line — each header starts a new segment
-            if (entry.type === "config") {
+          switch (parsed.kind) {
+            case "config": {
+              const entry = parsed.data;
               if (entry.name) state.name = entry.name;
               if (entry.metricName) state.metricName = entry.metricName;
               if (entry.metricUnit !== undefined)
@@ -601,37 +834,52 @@ export default function autotrainExtension(pi: ExtensionAPI) {
               // Increment segment (first config = 0, second = 1, etc.)
               if (state.results.length > 0) segment++;
               state.currentSegment = segment;
-              continue;
+              break;
             }
 
-            // Experiment result line
-            state.results.push({
-              commit: entry.commit ?? "",
-              metric: entry.metric ?? 0,
-              metrics: entry.metrics ?? {},
-              status: entry.status ?? "keep",
-              description: entry.description ?? "",
-              timestamp: entry.timestamp ?? 0,
-              segment,
-            });
+            case "result": {
+              const entry = parsed.data;
+              state.results.push({
+                commit: entry.commit ?? "",
+                metric: entry.metric ?? 0,
+                metrics: entry.metrics ?? {},
+                status: entry.status ?? "keep",
+                description: entry.description ?? "",
+                timestamp: entry.timestamp ?? 0,
+                segment,
+              });
 
-            // Register secondary metrics
-            for (const name of Object.keys(entry.metrics ?? {})) {
-              if (!state.secondaryMetrics.find((m) => m.name === name)) {
-                let unit = "";
-                if (name.endsWith("_µs") || name.includes("µs")) unit = "µs";
-                else if (name.endsWith("_ms") || name.includes("ms"))
-                  unit = "ms";
-                else if (name.endsWith("_s") || name.includes("sec"))
-                  unit = "s";
-                state.secondaryMetrics.push({ name, unit });
+              // Register secondary metrics
+              for (const name of Object.keys(entry.metrics ?? {})) {
+                if (!state.secondaryMetrics.find((m) => m.name === name)) {
+                  let unit = "";
+                  if (name.endsWith("_µs") || name.includes("µs"))
+                    unit = "µs";
+                  else if (name.endsWith("_ms") || name.includes("ms"))
+                    unit = "ms";
+                  else if (name.endsWith("_s") || name.includes("sec"))
+                    unit = "s";
+                  state.secondaryMetrics.push({ name, unit });
+                }
               }
+              break;
             }
-          } catch {
-            // Skip malformed lines
+
+            case "job_submitted":
+              jobSubmitted.push(parsed.data);
+              break;
+
+            case "job_completed":
+              jobCompleted.push(parsed.data);
+              break;
+
+            case "skip":
+              // Malformed or unknown — ignore
+              break;
           }
         }
-        if (state.results.length > 0) {
+
+        if (state.results.length > 0 || jobSubmitted.length > 0) {
           loadedFromJsonl = true;
           state.bestMetric = findBaselineMetric(
             state.results,
@@ -661,6 +909,80 @@ export default function autotrainExtension(pi: ExtensionAPI) {
             if (!r.metrics) r.metrics = {};
           }
         }
+      }
+    }
+
+    // Rebuild async job state from JSONL entries
+    activeJobs = rebuildActiveJobs(jobSubmitted, jobCompleted);
+    smokeRegistry = rebuildSmokeRegistry(jobSubmitted, jobCompleted);
+
+    // Compute nextExperimentId from max experiment_id seen
+    let maxExpId = 0;
+    for (const s of jobSubmitted) {
+      if (s.experiment_id > maxExpId) maxExpId = s.experiment_id;
+    }
+    nextExperimentId = maxExpId + 1;
+
+    // Orphan scan: inspect jobs that appear active but may have completed while agent was down
+    for (const [jobId, job] of activeJobs) {
+      try {
+        const inspectResult = await pi.exec(
+          "hf",
+          ["jobs", "inspect", jobId, "--format", "json"],
+          { cwd: ctx.cwd, timeout: 15000 },
+        );
+        const inspectData = JSON.parse(inspectResult.stdout);
+        const hfStatus = inspectData?.[0]?.status?.stage ?? "UNKNOWN";
+        const status = mapHfStatus(hfStatus);
+
+        if (status !== "running") {
+          // Job completed while agent was down — finalize it
+          let metrics: Record<string, number> | null = null;
+          if (status === "completed") {
+            try {
+              const logsResult = await pi.exec(
+                "hf",
+                ["jobs", "logs", jobId],
+                { cwd: ctx.cwd, timeout: 15000 },
+              );
+              metrics = parseMetricLines(logsResult.stdout);
+            } catch {
+              // Logs may not be available
+            }
+          }
+
+          // Write synthetic job_completed entry
+          try {
+            const completedEntry = JSON.stringify({
+              type: "job_completed",
+              job_id: jobId,
+              experiment_id: job.experiment_id,
+              stage: job.stage,
+              status,
+              metrics,
+              timestamp: Date.now(),
+            });
+            fs.appendFileSync(jsonlPath, completedEntry + "\n");
+          } catch {
+            // Non-fatal
+          }
+
+          // Update smoke registry if this was a smoke job
+          if (job.stage === "smoke") {
+            const regEntry = smokeRegistry.get(job.experiment_id);
+            if (regEntry) {
+              if (status === "completed" && metrics) {
+                regEntry.passed = true;
+              } else {
+                regEntry.failures++;
+              }
+            }
+          }
+
+          activeJobs.delete(jobId);
+        }
+      } catch {
+        // Inspect failed — leave job in activeJobs, agent can check later
       }
     }
 
@@ -754,6 +1076,7 @@ export default function autotrainExtension(pi: ExtensionAPI) {
           theme.fg("success", ` ${kept} kept`),
           crashed > 0 ? theme.fg("error", ` ${crashed}💥`) : "",
           checksFailed > 0 ? theme.fg("error", ` ${checksFailed}⚠`) : "",
+          activeJobs.size > 0 ? theme.fg("warning", ` ${activeJobs.size} job${activeJobs.size > 1 ? "s" : ""} active`) : "",
           theme.fg("dim", " │ "),
           theme.fg(
             "warning",
@@ -832,12 +1155,12 @@ export default function autotrainExtension(pi: ExtensionAPI) {
 
     if (!autotrainMode) return;
 
-    // Don't auto-resume if no experiments ran this session (user likely stopped manually)
-    if (experimentsThisSession === 0) return;
+    // Don't auto-resume if no experiments ran this session AND no active jobs
+    if (experimentsThisSession === 0 && activeJobs.size === 0) return;
 
-    // Rate-limit auto-resume to once every 5 minutes
+    // Rate-limit auto-resume to once every 2 minutes
     const now = Date.now();
-    if (now - lastAutoResumeTime < 5 * 60 * 1000) return;
+    if (now - lastAutoResumeTime < 2 * 60 * 1000) return;
     lastAutoResumeTime = now;
 
     if (autoResumeTurns >= MAX_AUTORESUME_TURNS) {
@@ -911,6 +1234,10 @@ export default function autotrainExtension(pi: ExtensionAPI) {
         : "none yet";
 
     extra += `\n\nSession state: ${totalRuns} experiments, ${keptCount} kept. Best ${state.metricName ?? "metric"}: ${bestVal}.`;
+
+    if (activeJobs.size > 0) {
+      extra += `\n\n🔄 ${activeJobs.size} active job${activeJobs.size > 1 ? "s" : ""} from previous session. Call check_jobs to get their status.`;
+    }
 
     // Consecutive discard streak (count backwards from most recent)
     let discardStreak = 0;
@@ -988,6 +1315,41 @@ export default function autotrainExtension(pi: ExtensionAPI) {
       }
 
       autotrainMode = true;
+
+      // Write benchmark.json if benchmark param provided
+      let benchmarkNote = "";
+      if (params.benchmark) {
+        try {
+          const benchmarkData = {
+            frozen_at: new Date().toISOString(),
+            primary_metric: state.metricName,
+            direction: state.bestDirection,
+            guardrails: params.benchmark.guardrails ?? [],
+            splits: {
+              train_seed: params.benchmark.train_seed,
+              eval_seed: params.benchmark.eval_seed,
+              test_seed: params.benchmark.test_seed,
+              eval_n: params.benchmark.eval_n,
+              test_n: params.benchmark.test_n ?? null,
+            },
+            acceptance_threshold: params.benchmark.acceptance_threshold ?? 0.02,
+            noise_note: `eval_n=${params.benchmark.eval_n} → treat +/-${params.benchmark.eval_n < 200 ? "3" : params.benchmark.eval_n < 1000 ? "1.5" : "1"}% as ties`,
+          };
+          const benchmarkPath = path.join(ctx.cwd, "benchmark.json");
+          fs.writeFileSync(benchmarkPath, JSON.stringify(benchmarkData, null, 2) + "\n");
+
+          // Git add + commit benchmark.json
+          await pi.exec(
+            "bash",
+            ["-c", `git add benchmark.json && git commit -m "autotrain: freeze benchmark contract"`],
+            { cwd: ctx.cwd, timeout: 10000 },
+          );
+          benchmarkNote = "\nBenchmark contract written to benchmark.json and committed.";
+        } catch (e) {
+          benchmarkNote = `\n⚠️ Failed to write/commit benchmark.json: ${e instanceof Error ? e.message : String(e)}`;
+        }
+      }
+
       updateWidget(ctx);
 
       const reinitNote = isReinit
@@ -997,7 +1359,7 @@ export default function autotrainExtension(pi: ExtensionAPI) {
         content: [
           {
             type: "text",
-            text: `✅ Experiment initialized: "${state.name}"${reinitNote}\nMetric: ${state.metricName} (${state.metricUnit || "unitless"}, ${state.bestDirection} is better)\nConfig written to autotrain.jsonl. Now run the baseline with run_experiment.`,
+            text: `✅ Experiment initialized: "${state.name}"${reinitNote}\nMetric: ${state.metricName} (${state.metricUnit || "unitless"}, ${state.bestDirection} is better)\nConfig written to autotrain.jsonl. Now run the baseline with run_experiment.${benchmarkNote}`,
           },
         ],
         details: { state: { ...state } },
@@ -1265,6 +1627,32 @@ export default function autotrainExtension(pi: ExtensionAPI) {
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const secondaryMetrics = params.metrics ?? {};
+
+      // Benchmark integrity check on keep
+      if (params.status === "keep") {
+        const benchmarkPath = path.join(ctx.cwd, "benchmark.json");
+        if (fs.existsSync(benchmarkPath)) {
+          try {
+            const diffResult = await pi.exec(
+              "git",
+              ["diff", "HEAD", "--", "benchmark.json"],
+              { cwd: ctx.cwd, timeout: 5000 },
+            );
+            const diffOutput = (diffResult.stdout || "").trim();
+            if (diffOutput) {
+              return {
+                content: [{
+                  type: "text",
+                  text: `❌ Cannot keep — benchmark.json has uncommitted changes.\n\nRevert with: git checkout -- benchmark.json\n\nDiff:\n${diffOutput.slice(0, 500)}`,
+                }],
+                details: {},
+              };
+            }
+          } catch {
+            // If git diff fails, proceed cautiously
+          }
+        }
+      }
 
       // Gate: prevent "keep" when last run's checks failed
       if (params.status === "keep" && lastRunChecks && !lastRunChecks.pass) {
@@ -1541,6 +1929,610 @@ export default function autotrainExtension(pi: ExtensionAPI) {
   });
 
   // -----------------------------------------------------------------------
+  // submit_job tool — async job submission
+  // -----------------------------------------------------------------------
+
+  pi.registerTool({
+    name: "submit_job",
+    label: "Submit Job",
+    description:
+      "Submit a detached HF Job. Returns immediately with a job ID and experiment ID. Default stage is 'smoke' (10-step validation). Use stage='full' after smoke passes.",
+    promptSnippet:
+      "Submit a detached HF Job (smoke or full). Returns job_id immediately.",
+    promptGuidelines: [
+      "Use submit_job instead of run_experiment for HF Jobs campaigns — it returns immediately.",
+      "Default stage is 'smoke'. Always run a smoke test before a full training job.",
+      "For stage='full', you must provide the experiment_id from the passed smoke.",
+      "After submit_job, call check_jobs to poll for completion.",
+    ],
+    parameters: SubmitJobParams,
+
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      const stage = params.stage ?? "smoke";
+      const timeout = (params.timeout_seconds ?? 600) * 1000;
+      const command = params.command;
+      const scriptHash = hashCommand(command);
+      const jsonlPath = path.join(ctx.cwd, "autotrain.jsonl");
+
+      // For full stage: validate smoke gate
+      let experimentId = params.experiment_id;
+      if (stage === "full") {
+        if (!experimentId) {
+          return {
+            content: [{ type: "text", text: "❌ experiment_id is required for stage='full'. Provide the experiment_id from the passed smoke." }],
+            details: {},
+          };
+        }
+        const reg = smokeRegistry.get(experimentId);
+        if (!reg?.passed) {
+          return {
+            content: [{ type: "text", text: `❌ Smoke for experiment ${experimentId} has not passed. Run a smoke first.` }],
+            details: {},
+          };
+        }
+        if (scriptHash !== reg.script_hash) {
+          return {
+            content: [{ type: "text", text: `❌ Training script changed since smoke passed for experiment ${experimentId}. Re-run smoke with the updated script.` }],
+            details: {},
+          };
+        }
+      }
+
+      // For smoke: auto-generate experiment_id
+      if (stage === "smoke") {
+        experimentId = params.experiment_id ?? nextExperimentId++;
+
+        // 3-strike circuit breaker
+        const reg = smokeRegistry.get(experimentId);
+        if (reg && reg.failures >= 3 && !reg.passed) {
+          return {
+            content: [{ type: "text", text: `❌ Experiment ${experimentId} has failed smoke 3 times. Log as smoke_failed and start a new experiment, or document the root cause in autotrain.md before retrying.` }],
+            details: {},
+          };
+        }
+      }
+
+      // Execute the command
+      let result;
+      try {
+        result = await pi.exec("bash", ["-c", command], {
+          signal,
+          timeout,
+          cwd: ctx.cwd,
+        });
+      } catch (e) {
+        return {
+          content: [{ type: "text", text: `❌ Command failed: ${e instanceof Error ? e.message : String(e)}` }],
+          details: {},
+        };
+      }
+
+      // Parse job ID (24-char hex) from stdout
+      const stdout = (result.stdout + "\n" + result.stderr).trim();
+      const jobIdMatch = stdout.match(/[0-9a-f]{24}/);
+      if (!jobIdMatch) {
+        return {
+          content: [{ type: "text", text: `❌ No 24-char hex job ID found in output:\n${stdout.slice(-500)}` }],
+          details: {},
+        };
+      }
+
+      const jobId = jobIdMatch[0];
+      const startedAt = Date.now();
+
+      // Add to activeJobs
+      const jobInfo: JobInfo = {
+        job_id: jobId,
+        experiment_id: experimentId!,
+        stage,
+        command,
+        script_hash: scriptHash,
+        started_at: startedAt,
+        poll_count: 0,
+      };
+      activeJobs.set(jobId, jobInfo);
+
+      // Initialize or update smoke registry for smoke stage
+      if (stage === "smoke") {
+        if (!smokeRegistry.has(experimentId!)) {
+          smokeRegistry.set(experimentId!, {
+            passed: false,
+            script_hash: scriptHash,
+            job_id: jobId,
+            failures: 0,
+            timestamp: startedAt,
+          });
+        } else {
+          const reg = smokeRegistry.get(experimentId!)!;
+          reg.job_id = jobId;
+          reg.script_hash = scriptHash;
+        }
+      }
+
+      // Append job_submitted to JSONL
+      try {
+        const entry = JSON.stringify({
+          type: "job_submitted",
+          job_id: jobId,
+          experiment_id: experimentId,
+          stage,
+          command,
+          script_hash: scriptHash,
+          timestamp: startedAt,
+        });
+        fs.appendFileSync(jsonlPath, entry + "\n");
+      } catch {
+        // Non-fatal
+      }
+
+      experimentsThisSession++;
+
+      return {
+        content: [{
+          type: "text",
+          text: `✅ Job submitted (${stage})\nJob ID: ${jobId}\nExperiment ID: ${experimentId}\nStage: ${stage}\nScript hash: ${scriptHash.slice(0, 12)}…\n\nCall check_jobs to poll for completion.`,
+        }],
+        details: {
+          job_id: jobId,
+          experiment_id: experimentId,
+          stage,
+          started_at: startedAt,
+          script_hash: scriptHash,
+        },
+      };
+    },
+
+    renderCall(args, theme) {
+      let text = theme.fg("toolTitle", theme.bold("submit_job "));
+      text += theme.fg("muted", args.stage ?? "smoke");
+      text += " " + theme.fg("dim", args.command ?? "");
+      return new Text(text, 0, 0);
+    },
+
+    renderResult(result, _options, theme) {
+      const t = result.content[0];
+      return new Text(t?.type === "text" ? t.text : "", 0, 0);
+    },
+  });
+
+  // -----------------------------------------------------------------------
+  // check_jobs tool — poll active job status
+  // -----------------------------------------------------------------------
+
+  pi.registerTool({
+    name: "check_jobs",
+    label: "Check Jobs",
+    description:
+      "Check status of all active jobs (or one specific job). Returns status, elapsed time, metrics (if completed), and tail output.",
+    promptSnippet:
+      "Poll active HF Jobs for status and metrics",
+    promptGuidelines: [
+      "Call check_jobs after every 2-3 other tool calls while jobs are running.",
+      "Do not busy-loop — always do at least one productive action between polls.",
+      "When a job completes, metrics are parsed from METRIC lines in the logs.",
+    ],
+    parameters: CheckJobsParams,
+
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      const jobsToCheck = params.job_id
+        ? activeJobs.has(params.job_id)
+          ? [activeJobs.get(params.job_id)!]
+          : []
+        : [...activeJobs.values()];
+
+      if (jobsToCheck.length === 0) {
+        return {
+          content: [{ type: "text", text: params.job_id ? `❌ Job ${params.job_id} not found in active jobs.` : "No active jobs." }],
+          details: { jobs: [] },
+        };
+      }
+
+      const results: any[] = [];
+      const jsonlPath = path.join(ctx.cwd, "autotrain.jsonl");
+
+      for (const job of jobsToCheck) {
+        const now = Date.now();
+        const elapsedSeconds = Math.round((now - job.started_at) / 1000);
+
+        let status: "running" | "completed" | "error" | "canceled" | "timeout" = "running";
+        let metrics: Record<string, number> | null = null;
+        let tailOutput = "";
+
+        try {
+          const inspectResult = await pi.exec(
+            "hf",
+            ["jobs", "inspect", job.job_id, "--format", "json"],
+            { cwd: ctx.cwd, timeout: 15000, signal },
+          );
+          const inspectData = JSON.parse(inspectResult.stdout);
+          const hfStatus = inspectData?.[0]?.status?.stage ?? "UNKNOWN";
+          status = mapHfStatus(hfStatus);
+        } catch {
+          // If inspect fails, assume still running
+        }
+
+        // Fetch logs for terminal states
+        if (status !== "running") {
+          try {
+            const logsResult = await pi.exec(
+              "hf",
+              ["jobs", "logs", job.job_id],
+              { cwd: ctx.cwd, timeout: 15000, signal },
+            );
+            const logText = logsResult.stdout;
+            if (status === "completed") {
+              metrics = parseMetricLines(logText);
+            }
+            tailOutput = logText.split("\n").slice(-40).join("\n");
+          } catch {
+            tailOutput = "(logs unavailable)";
+          }
+
+          // Write job_completed to JSONL
+          try {
+            const completedEntry = JSON.stringify({
+              type: "job_completed",
+              job_id: job.job_id,
+              experiment_id: job.experiment_id,
+              stage: job.stage,
+              status,
+              metrics,
+              timestamp: Date.now(),
+            });
+            fs.appendFileSync(jsonlPath, completedEntry + "\n");
+          } catch {
+            // Non-fatal
+          }
+
+          // Update smoke registry
+          if (job.stage === "smoke") {
+            const reg = smokeRegistry.get(job.experiment_id);
+            if (reg) {
+              if (status === "completed" && metrics) {
+                reg.passed = true;
+              } else {
+                reg.failures++;
+              }
+            }
+          }
+
+          // Remove from active jobs
+          activeJobs.delete(job.job_id);
+        } else {
+          // For running jobs, try to get recent logs
+          try {
+            const logsResult = await pi.exec(
+              "hf",
+              ["jobs", "logs", job.job_id],
+              { cwd: ctx.cwd, timeout: 15000, signal },
+            );
+            tailOutput = logsResult.stdout.split("\n").slice(-40).join("\n");
+          } catch {
+            tailOutput = "";
+          }
+        }
+
+        // Context protection: suppress tail_output after 5 polls
+        const showTail = job.poll_count < 5;
+        job.poll_count++;
+
+        results.push({
+          job_id: job.job_id,
+          experiment_id: job.experiment_id,
+          stage: job.stage,
+          status,
+          elapsed_seconds: elapsedSeconds,
+          metrics,
+          tail_output: showTail ? tailOutput : "",
+          poll_count: job.poll_count,
+        });
+      }
+
+      // Build response text
+      const lines: string[] = [];
+      for (const r of results) {
+        const icon = r.status === "completed" ? "✅" : r.status === "running" ? "⏳" : "❌";
+        lines.push(`${icon} Job ${r.job_id.slice(0, 8)}… (exp ${r.experiment_id}, ${r.stage}): ${r.status} — ${r.elapsed_seconds}s`);
+        if (r.metrics) {
+          lines.push(`   Metrics: ${Object.entries(r.metrics).map(([k, v]) => `${k}=${v}`).join(", ")}`);
+        }
+        if (r.tail_output) {
+          lines.push(`   Output:\n${r.tail_output}`);
+        } else if (r.poll_count > 5 && r.status === "running") {
+          lines.push(`   (tail output suppressed after 5 polls — status/metrics still shown)`);
+        }
+      }
+
+      updateWidget(ctx);
+      if (overlayTui) overlayTui.requestRender();
+
+      return {
+        content: [{ type: "text", text: lines.join("\n") }],
+        details: { jobs: results },
+      };
+    },
+
+    renderCall(args, theme) {
+      let text = theme.fg("toolTitle", theme.bold("check_jobs"));
+      if (args.job_id) text += " " + theme.fg("dim", args.job_id);
+      return new Text(text, 0, 0);
+    },
+
+    renderResult(result, _options, theme) {
+      const t = result.content[0];
+      return new Text(t?.type === "text" ? t.text : "", 0, 0);
+    },
+  });
+
+  // -----------------------------------------------------------------------
+  // cancel_job tool
+  // -----------------------------------------------------------------------
+
+  pi.registerTool({
+    name: "cancel_job",
+    label: "Cancel Job",
+    description:
+      "Cancel a running HF Job. Refuses to cancel smoke jobs that have been running less than 120 seconds.",
+    promptSnippet: "Cancel a running HF Job by job_id",
+    promptGuidelines: [
+      "Only cancel jobs when there is a clear reason (e.g., wrong configuration, known bug).",
+      "Smoke jobs under 2 minutes old cannot be canceled — wait for completion.",
+    ],
+    parameters: CancelJobParams,
+
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const job = activeJobs.get(params.job_id);
+      if (!job) {
+        return {
+          content: [{ type: "text", text: `❌ Job ${params.job_id} not found in active jobs.` }],
+          details: {},
+        };
+      }
+
+      // Minimum runtime guard for smoke jobs
+      const elapsed = (Date.now() - job.started_at) / 1000;
+      if (job.stage === "smoke" && elapsed < 120) {
+        return {
+          content: [{ type: "text", text: `❌ Smoke has only been running ${Math.round(elapsed)}s. Wait for completion or natural timeout (minimum 120s before cancel).` }],
+          details: {},
+        };
+      }
+
+      // Execute cancel
+      try {
+        await pi.exec("hf", ["jobs", "cancel", params.job_id], {
+          cwd: ctx.cwd,
+          timeout: 15000,
+        });
+      } catch (e) {
+        return {
+          content: [{ type: "text", text: `❌ Failed to cancel job: ${e instanceof Error ? e.message : String(e)}` }],
+          details: {},
+        };
+      }
+
+      activeJobs.delete(params.job_id);
+
+      return {
+        content: [{ type: "text", text: `✅ Canceled job ${params.job_id}. Reason: ${params.reason}` }],
+        details: { job_id: params.job_id, reason: params.reason },
+      };
+    },
+
+    renderCall(args, theme) {
+      let text = theme.fg("toolTitle", theme.bold("cancel_job "));
+      text += theme.fg("dim", args.job_id ?? "");
+      return new Text(text, 0, 0);
+    },
+
+    renderResult(result, _options, theme) {
+      const t = result.content[0];
+      return new Text(t?.type === "text" ? t.text : "", 0, 0);
+    },
+  });
+
+  // -----------------------------------------------------------------------
+  // log_decision tool — extends log_experiment with benchmark integrity check
+  // -----------------------------------------------------------------------
+
+  pi.registerTool({
+    name: "log_decision",
+    label: "Log Decision",
+    description:
+      "Record an experiment decision (keep/discard/crash/smoke_failed). Like log_experiment but also checks benchmark.json integrity on keep.",
+    promptSnippet:
+      "Log experiment decision with benchmark integrity check",
+    promptGuidelines: [
+      "Use log_decision instead of log_experiment for campaigns with benchmark.json.",
+      "On 'keep', benchmark.json must not have uncommitted changes.",
+      "Use 'smoke_failed' when a smoke test fails — this counts toward anti-thrash.",
+    ],
+    parameters: Type.Object({
+      commit: Type.String({ description: "Git commit hash (short, 7 chars)" }),
+      metric: Type.Number({
+        description: "The primary optimization metric value. 0 for crashes/smoke_failed.",
+      }),
+      status: StringEnum(["keep", "discard", "crash", "checks_failed", "smoke_failed"] as const),
+      description: Type.String({ description: "Short description of what this experiment tried" }),
+      metrics: Type.Optional(
+        Type.Record(Type.String(), Type.Number(), {
+          description: "Additional metrics to track as { name: value } pairs.",
+        }),
+      ),
+      force: Type.Optional(
+        Type.Boolean({
+          description: "Set to true to allow adding a new secondary metric.",
+        }),
+      ),
+    }),
+
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      // Benchmark integrity check on keep
+      if (params.status === "keep") {
+        const benchmarkPath = path.join(ctx.cwd, "benchmark.json");
+        if (fs.existsSync(benchmarkPath)) {
+          try {
+            const diffResult = await pi.exec(
+              "git",
+              ["diff", "HEAD", "--", "benchmark.json"],
+              { cwd: ctx.cwd, timeout: 5000 },
+            );
+            const diffOutput = (diffResult.stdout || "").trim();
+            if (diffOutput) {
+              return {
+                content: [{
+                  type: "text",
+                  text: `❌ Cannot keep — benchmark.json has uncommitted changes.\n\nRevert with: git checkout -- benchmark.json\n\nDiff:\n${diffOutput.slice(0, 500)}`,
+                }],
+                details: {},
+              };
+            }
+          } catch {
+            // If git diff fails, proceed cautiously
+          }
+        }
+      }
+
+      // Gate: prevent "keep" when last run's checks failed
+      if (params.status === "keep" && lastRunChecks && !lastRunChecks.pass) {
+        return {
+          content: [{
+            type: "text",
+            text: `❌ Cannot keep — autotrain.checks.sh failed.\n\n${lastRunChecks.output.slice(-500)}\n\nLog as 'checks_failed' instead.`,
+          }],
+          details: {},
+        };
+      }
+
+      const secondaryMetrics = params.metrics ?? {};
+
+      // Validate secondary metrics consistency
+      if (state.secondaryMetrics.length > 0) {
+        const knownNames = new Set(state.secondaryMetrics.map((m) => m.name));
+        const providedNames = new Set(Object.keys(secondaryMetrics));
+        const missing = [...knownNames].filter((n) => !providedNames.has(n));
+        if (missing.length > 0) {
+          return {
+            content: [{
+              type: "text",
+              text: `❌ Missing secondary metrics: ${missing.join(", ")}\nExpected: ${[...knownNames].join(", ")}`,
+            }],
+            details: {},
+          };
+        }
+        const newMetrics = [...providedNames].filter((n) => !knownNames.has(n));
+        if (newMetrics.length > 0 && !params.force) {
+          return {
+            content: [{
+              type: "text",
+              text: `❌ New secondary metric(s) not previously tracked: ${newMetrics.join(", ")}. Use force: true to add.`,
+            }],
+            details: {},
+          };
+        }
+      }
+
+      const experiment: ExperimentResult = {
+        commit: params.commit.slice(0, 7),
+        metric: params.metric,
+        metrics: secondaryMetrics,
+        status: params.status === "smoke_failed" ? "crash" : params.status,
+        description: params.description,
+        timestamp: Date.now(),
+        segment: state.currentSegment,
+      };
+
+      state.results.push(experiment);
+      experimentsThisSession++;
+
+      // Register secondary metrics
+      for (const name of Object.keys(secondaryMetrics)) {
+        if (!state.secondaryMetrics.find((m) => m.name === name)) {
+          let unit = "";
+          if (name.endsWith("_µs") || name.includes("µs")) unit = "µs";
+          else if (name.endsWith("_ms") || name.includes("ms")) unit = "ms";
+          else if (name.endsWith("_s") || name.includes("sec")) unit = "s";
+          state.secondaryMetrics.push({ name, unit });
+        }
+      }
+
+      state.bestMetric = findBaselineMetric(state.results, state.currentSegment);
+
+      let text = `Logged #${state.results.length}: ${params.status} — ${experiment.description}`;
+
+      if (state.bestMetric !== null) {
+        text += `\nBaseline ${state.metricName}: ${formatNum(state.bestMetric, state.metricUnit)}`;
+      }
+
+      // Auto-commit on keep
+      if (params.status === "keep") {
+        try {
+          const resultData: Record<string, unknown> = {
+            status: params.status,
+            [state.metricName || "metric"]: params.metric,
+            ...secondaryMetrics,
+          };
+          const trailerJson = JSON.stringify(resultData);
+          const commitMsg = `${params.description}\n\nResult: ${trailerJson}`;
+          const gitResult = await pi.exec(
+            "bash",
+            ["-c", `git add -A && git diff --cached --quiet && echo "NOTHING_TO_COMMIT" || git commit -m ${JSON.stringify(commitMsg)}`],
+            { cwd: ctx.cwd, timeout: 10000 },
+          );
+          const gitOutput = (gitResult.stdout + gitResult.stderr).trim();
+          if (gitOutput.includes("NOTHING_TO_COMMIT")) {
+            text += `\n📝 Git: nothing to commit`;
+          } else if (gitResult.code === 0) {
+            text += `\n📝 Git: committed — ${gitOutput.split("\n")[0] || ""}`;
+            try {
+              const shaResult = await pi.exec("git", ["rev-parse", "--short=7", "HEAD"], { cwd: ctx.cwd, timeout: 5000 });
+              const newSha = (shaResult.stdout || "").trim();
+              if (newSha && newSha.length >= 7) experiment.commit = newSha;
+            } catch {}
+          } else {
+            text += `\n⚠️ Git commit failed: ${gitOutput.slice(0, 200)}`;
+          }
+        } catch (e) {
+          text += `\n⚠️ Git error: ${e instanceof Error ? e.message : String(e)}`;
+        }
+      } else {
+        text += `\n📝 Git: skipped commit (${params.status}) — revert with git checkout -- .`;
+      }
+
+      // Persist to autotrain.jsonl
+      try {
+        const jsonlPath = path.join(ctx.cwd, "autotrain.jsonl");
+        fs.appendFileSync(
+          jsonlPath,
+          JSON.stringify({ run: state.results.length, ...experiment }) + "\n",
+        );
+      } catch {}
+
+      lastRunChecks = null;
+      updateWidget(ctx);
+      if (overlayTui) overlayTui.requestRender();
+
+      return {
+        content: [{ type: "text", text }],
+        details: { experiment, state: { ...state } } as LogDetails,
+      };
+    },
+
+    renderCall(args, theme) {
+      let text = theme.fg("toolTitle", theme.bold("log_decision "));
+      const color = args.status === "keep" ? "success" : args.status === "crash" || args.status === "smoke_failed" ? "error" : "warning";
+      text += theme.fg(color, args.status);
+      text += " " + theme.fg("dim", args.description);
+      return new Text(text, 0, 0);
+    },
+
+    renderResult(result, _options, theme) {
+      const t = result.content[0];
+      return new Text(t?.type === "text" ? t.text : "", 0, 0);
+    },
+  });
+
+  // -----------------------------------------------------------------------
   // Ctrl+Y — toggle dashboard expand/collapse
   // -----------------------------------------------------------------------
 
@@ -1603,7 +2595,7 @@ export default function autotrainExtension(pi: ExtensionAPI) {
               // Content gets the full width — no box borders
               const content = renderDashboardLines(state, width, theme, 0);
 
-              // Add running experiment as next row in the list
+              // Add running experiment as next row in the list (legacy sync mode)
               if (runningExperiment) {
                 const elapsed = formatElapsed(
                   Date.now() - runningExperiment.startedAt,
@@ -1614,6 +2606,19 @@ export default function autotrainExtension(pi: ExtensionAPI) {
                   truncateToWidth(
                     `  ${theme.fg("dim", String(nextIdx).padEnd(3))}` +
                       theme.fg("warning", `${frame} running… ${elapsed}`),
+                    width,
+                  ),
+                );
+              }
+
+              // Add active async jobs
+              for (const [, job] of activeJobs) {
+                const elapsed = formatElapsed(Date.now() - job.started_at);
+                const frame = SPINNER[spinnerFrame % SPINNER.length];
+                content.push(
+                  truncateToWidth(
+                    `  ${theme.fg("dim", `exp${job.experiment_id}`.padEnd(3))}` +
+                      theme.fg("warning", `${frame} ${job.stage} ${job.job_id.slice(0, 8)}… ${elapsed}`),
                     width,
                   ),
                 );

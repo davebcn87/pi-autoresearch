@@ -14,6 +14,14 @@
       "./skills"
     ]
   },
+  "scripts": {
+    "test": "vitest run --config extensions/pi-autotrain/vitest.config.ts"
+  },
+  "devDependencies": {
+    "vitest": "^3.1.1",
+    "typescript": "^5.8.3",
+    "@types/node": "^22.15.3"
+  },
   "peerDependencies": {
     "@mariozechner/pi-ai": "*",
     "@mariozechner/pi-coding-agent": "*",
