@@ -68,9 +68,12 @@ pi install https://github.com/davebcn87/pi-autoresearch
 - **Confidence score** — after 3+ runs, shows how the best improvement compares to the session noise floor. ≥2.0× (green) = likely real, 1.0–2.0× (yellow) = above noise but marginal, <1.0× (red) = within noise.
 - **Expanded dashboard** — `Ctrl+X` expands the widget into a full results table with columns for commit, metric, status, and description.
 - **Fullscreen overlay** — `Ctrl+Shift+X` opens a scrollable full-terminal dashboard. Shows a live spinner with elapsed time for running experiments.
-### Skill
 
-`autoresearch-create` asks a few questions (or infers from context) about your goal, command, metric, and files in scope — then writes two files and starts the loop immediately:
+### Skills
+
+**`autoresearch-create`** asks a few questions (or infers from context) about your goal, command, metric, and files in scope — then writes two files and starts the loop immediately:
+
+**`autoresearch-finalize`** turns a noisy autoresearch branch into clean, independent branches — one per logical change, each starting from the merge-base. Groups must not share files, so each branch can be reviewed and merged independently.
 
 | File | Purpose |
 |------|---------|
@@ -121,7 +124,15 @@ Every result is appended to `autoresearch.jsonl` in your project — one line pe
 - **Human readable** — open it anytime to see the full history
 - **Branch-aware** — each branch has its own session
 
-### 3. Monitor progress
+### 3. Finalize into reviewable branches
+
+```
+/skill:autoresearch-finalize
+```
+
+The agent reads `autoresearch.jsonl`, groups kept experiments into logical changesets, proposes the grouping for your approval, then creates independent branches from the merge-base. Each commit includes metric improvements in the message. Groups must not share files, so branches can be reviewed and merged independently.
+
+### 4. Monitor progress
 
 - **Widget** — always visible above the editor
 - **`/autoresearch`** — full dashboard with results table and best run
