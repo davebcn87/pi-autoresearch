@@ -1,0 +1,6 @@
+{
+  "name": "markdown",
+  "description": "Append a formatted session report to autoresearch-report.md",
+  "trigger": "export",
+  "run": "export.sh"
+}
