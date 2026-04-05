@@ -15,9 +15,9 @@
     ]
   },
   "peerDependencies": {
-    "@mariozechner/pi-ai": "*",
-    "@mariozechner/pi-coding-agent": "*",
-    "@mariozechner/pi-tui": "*",
+    "@mariozechner/pi-ai": "^0.65.0",
+    "@mariozechner/pi-coding-agent": "^0.65.0",
+    "@mariozechner/pi-tui": "^0.65.0",
     "@sinclair/typebox": "*"
   }
 }
