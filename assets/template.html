@@ -449,6 +449,7 @@
           metricName: cfg.metricName || 'metric',
           metricUnit: cfg.metricUnit || '',
           bestDirection: cfg.bestDirection === 'higher' ? 'higher' : 'lower',
+          repo: cfg.repo || null,
         },
         runs: runs.map(normalizeRun),
       };
@@ -533,6 +534,16 @@
       return '<td class="' + className + '">' + content + '</td>';
     }
 
+    function commitCell(hash, repo) {
+      if (!hash) return '';
+      const safe = escapeHtml(hash);
+      if (repo) {
+        const safeRepo = escapeHtml(repo);
+        return '<a href="https://github.com/' + safeRepo + '/commit/' + safe + '" target="_blank" rel="noopener" style="color:inherit;text-decoration:none;border-bottom:1px dotted var(--muted)">' + safe + '</a>';
+      }
+      return safe;
+    }
+
     function runLabel(run, index) {
       return '#' + (run.run || (index + 1));
     }
@@ -563,7 +574,7 @@
         td(escapeHtml(metricDisplay(run)), 'mono'),
         td(delta.text, delta.className),
         td(formatConfidence(run.confidence), 'mono'),
-        td(escapeHtml(run.commit || ''), 'mono muted'),
+        td(commitCell(run.commit, session.config.repo), 'mono muted'),
         td(escapeHtml(run.description || '')),
         td(asiField(run, 'hypothesis')),
         td(asiField(run, 'rollback_reason')),
