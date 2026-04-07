@@ -83,6 +83,8 @@ interface ExperimentState {
   /** Definitions for secondary metrics (order preserved) */
   secondaryMetrics: MetricDef[];
   name: string | null;
+  /** GitHub "owner/repo" extracted from git remote origin. null if unavailable or non-GitHub. */
+  repo: string | null;
   /** Current segment index (incremented on each init_experiment) */
   currentSegment: number;
   /** Maximum number of experiments before auto-stopping. null = unlimited. */
@@ -624,6 +626,7 @@ function createExperimentState(): ExperimentState {
     metricUnit: "",
     secondaryMetrics: [],
     name: null,
+    repo: null,
     currentSegment: 0,
     maxExperiments: null,
     confidence: null,
@@ -988,6 +991,24 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   const getRuntime = (ctx: ExtensionContext): AutoresearchRuntime =>
     runtimeStore.ensure(getSessionKey(ctx));
 
+  /**
+   * Extract "owner/repo" from the git remote origin URL.
+   * Returns null if: not a git repo, no remote configured, or non-GitHub remote.
+   */
+  async function parseGitRepo(cwd: string): Promise<string | null> {
+    try {
+      const result = await pi.exec("git", ["remote", "get-url", "origin"], { cwd, timeout: 5000 });
+      if (result.code !== 0 || !result.stdout?.trim()) return null;
+      const url = result.stdout.trim();
+      // SSH:   git@github.com:owner/repo.git
+      // HTTPS: https://github.com/owner/repo.git  or  https://github.com/owner/repo
+      const match = url.match(/(?:github\.com[:/])([^/]+\/[^/]+?)(?:\.git)?$/);
+      return match?.[1] ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   // Running experiment state (for spinner in fullscreen overlay)
   let overlayTui: { requestRender: () => void } | null = null;
   let spinnerInterval: ReturnType<typeof setInterval> | null = null;
@@ -1063,6 +1084,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
               if (entry.metricName) state.metricName = entry.metricName;
               if (entry.metricUnit !== undefined) state.metricUnit = entry.metricUnit;
               if (entry.bestDirection) state.bestDirection = entry.bestDirection;
+              state.repo = entry.repo ?? state.repo ?? null;
               // Increment segment (first config = 0, second = 1, etc.)
               if (state.results.length > 0) {
                 segment++;
@@ -1467,6 +1489,10 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
       // Write config header to jsonl (append for re-init, create for first)
       const workDir = resolveWorkDir(ctx.cwd);
+      // Auto-detect GitHub repo from git remote (best-effort, non-blocking)
+      const repo = await parseGitRepo(workDir);
+      state.repo = repo;
+
       try {
         const jsonlPath = path.join(workDir, "autoresearch.jsonl");
         const config = JSON.stringify({
@@ -1475,6 +1501,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
           metricName: state.metricName,
           metricUnit: state.metricUnit,
           bestDirection: state.bestDirection,
+          ...(repo && { repo }),
         });
         if (fs.existsSync(jsonlPath)) {
           fs.appendFileSync(jsonlPath, config + "\n");
