@@ -87,11 +87,13 @@ JSON config file that lives in the pi session's working directory (`ctx.cwd`). S
 
 - **`maxIterations`** (number) — maximum experiments before auto-stopping.
 - **`workingDir`** (string) — override the directory for all autoresearch operations: file I/O (`autoresearch.jsonl`, `autoresearch.md`, `autoresearch.sh`, `autoresearch.checks.sh`, `autoresearch.ideas.md`), command execution, and git operations. Supports absolute paths or relative paths (resolved against `ctx.cwd`). The config file itself always stays in `ctx.cwd`. Fails if the directory doesn't exist.
+- **`autoCompactResume`** (boolean) — when `true`, autoresearch proactively compacts and auto-resumes when its context-exhaustion guard predicts the next iteration will not fit. When `false` (default), it stops and asks for a fresh pi session.
 
 ```json
 {
   "workingDir": "/path/to/project",
-  "maxIterations": 50
+  "maxIterations": 50,
+  "autoCompactResume": true
 }
 ```
 
