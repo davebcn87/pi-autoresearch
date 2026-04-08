@@ -172,6 +172,9 @@
     .delta.good { color: var(--good); }
     .delta.bad { color: var(--bad); }
     .muted { color: var(--muted); }
+    .muted a { color: inherit; text-decoration: none; border-bottom: 1px dotted var(--muted); }
+    .muted a:hover { color: var(--text); border-bottom-color: var(--text); }
+    .muted a:focus-visible { outline: 2px solid var(--accent, #58a6ff); outline-offset: 2px; border-radius: 2px; }
 
     .best-row { background: rgba(63,185,80,0.08); }
     .best-row td { border-bottom-color: rgba(63,185,80,0.22); }
@@ -539,7 +542,7 @@
       const safe = escapeHtml(hash);
       if (repo) {
         const safeRepo = escapeHtml(repo);
-        return '<a href="https://github.com/' + safeRepo + '/commit/' + safe + '" target="_blank" rel="noopener" style="color:inherit;text-decoration:none;border-bottom:1px dotted var(--muted)">' + safe + '</a>';
+        return '<a href="https://github.com/' + safeRepo + '/commit/' + safe + '" target="_blank" rel="noopener">' + safe + '</a>';
       }
       return safe;
     }

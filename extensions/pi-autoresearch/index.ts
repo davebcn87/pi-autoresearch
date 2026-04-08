@@ -1084,7 +1084,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
               if (entry.metricName) state.metricName = entry.metricName;
               if (entry.metricUnit !== undefined) state.metricUnit = entry.metricUnit;
               if (entry.bestDirection) state.bestDirection = entry.bestDirection;
-              state.repo = entry.repo ?? state.repo ?? null;
+              state.repo = entry.repo ?? state.repo;
               // Increment segment (first config = 0, second = 1, etc.)
               if (state.results.length > 0) {
                 segment++;
