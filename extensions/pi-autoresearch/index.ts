@@ -2823,12 +2823,16 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
       if (command === "off") {
         runtime.autoresearchMode = false;
+        runtime.dashboardExpanded = false;
         runtime.lastAutoResumeTime = 0;
         runtime.autoResumeTurns = 0;
         runtime.experimentsThisSession = 0;
+        runtime.pendingCompactResume = false;
         runtime.lastRunChecks = null;
+        runtime.lastRunDuration = null;
         runtime.runningExperiment = null;
         stopDashboardServer();
+        clearSessionUi(ctx);
         ctx.ui.notify("Autoresearch mode OFF", "info");
         return;
       }
