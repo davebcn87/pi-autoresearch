@@ -351,24 +351,6 @@ function isBetter(
   return direction === "lower" ? current < best : current > best;
 }
 
-// Why 1.2: iterations vary in cost; 20% buffer prevents overflow on heavier iterations
-const CONTEXT_SAFETY_MARGIN = 1.2;
-
-function estimateTokensPerIteration(history: number[]): number {
-  const mean = history.reduce((a, b) => a + b, 0) / history.length;
-  const sorted = [...history].sort((a, b) => a - b);
-  const median = sorted[Math.floor(sorted.length / 2)];
-  // Why max(mean, median): outlier-heavy runs inflate the mean, skewed runs inflate the median.
-  // Taking the larger gives a conservative estimate that handles both distributions.
-  return Math.max(mean, median);
-}
-
-function hasRoomForNextIteration(history: number[], currentTokens: number, contextWindow: number): boolean {
-  if (history.length < 1) return true;
-  const projectedTokens = currentTokens + estimateTokensPerIteration(history) * CONTEXT_SAFETY_MARGIN;
-  return projectedTokens <= contextWindow;
-}
-
 function recordIterationTokens(runtime: AutoresearchRuntime, currentTokens: number | null): void {
   if (runtime.iterationStartTokens == null || currentTokens == null) return;
   const tokensConsumed = currentTokens - runtime.iterationStartTokens;
@@ -386,12 +368,6 @@ function advanceIterationTracking(runtime: AutoresearchRuntime, ctx: ExtensionCo
   if (usage?.tokens == null) return;
   recordIterationTokens(runtime, usage.tokens);
   runtime.iterationStartTokens = usage.tokens;
-}
-
-function isContextExhausted(runtime: AutoresearchRuntime, ctx: ExtensionContext): boolean {
-  const usage = ctx.getContextUsage();
-  if (usage?.tokens == null) return false;
-  return !hasRoomForNextIteration(runtime.iterationTokenHistory, usage.tokens, usage.contextWindow);
 }
 
 /** Compute the median of a numeric array (returns 0 for empty arrays) */
@@ -1591,14 +1567,15 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       }
 
       advanceIterationTracking(runtime, ctx);
-      if (isContextExhausted(runtime, ctx)) {
-        runtime.autoresearchMode = false;
-        ctx.abort();
-        return {
-          content: [{ type: "text", text: "🛑 Context window almost full. Start a new pi session to continue — all progress is saved." }],
-          details: {},
-        };
-      }
+      // Note: Do NOT proactively abort on predicted context exhaustion here.
+      // pi's built-in _checkCompaction handles context overflow gracefully:
+      // it detects the overflow error, auto-compacts, and retries the turn.
+      // Our token-history check would fire too early and interrupt a running
+      // experiment unnecessarily. Let pi manage the overflow/retry cycle.
+      //
+      // If the experiment uses too many tokens and the LLM response itself
+      // triggers an overflow, pi's auto-compaction will compact and retry
+      // automatically — no manual intervention needed.
 
       runtime.runningExperiment = { startedAt: Date.now(), command: params.command };
       updateWidget(ctx);
