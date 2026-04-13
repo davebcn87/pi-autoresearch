@@ -18,12 +18,15 @@ Autonomous experiment loop: try ideas, keep what works, discard what doesn't, ne
 1. Ask (or infer): **Goal**, **Command**, **Metric** (+ direction), **Files in scope**, **Constraints**.
 2. `git checkout -b autoresearch/<goal>-<date>`
 3. Read the source files. Understand the workload deeply before writing anything.
-4. Write `autoresearch.md` and `autoresearch.sh` (see below). Commit both.
-5. `init_experiment` → run baseline → `log_experiment` → start looping immediately.
+4. Call `init_experiment` first — it returns the **session directory** path where all autoresearch files live (outside the project git tree, under `~/.pi/autoresearch/`).
+5. Write `autoresearch.md` and `autoresearch.sh` to the **session directory** (not the project directory). These files never touch git.
+6. Run baseline → `log_experiment` → start looping immediately.
+
+**Important:** All autoresearch files (`autoresearch.md`, `autoresearch.sh`, `autoresearch.checks.sh`, `autoresearch.ideas.md`, `autoresearch.jsonl`) live in the session directory. The project directory is only for code under test. Git operations (commit, revert) are clean — no files to protect.
 
 ### `autoresearch.md`
 
-This is the heart of the session. A fresh agent with no context should be able to read this file and run the loop effectively. Invest time making it excellent.
+This is the heart of the session. A fresh agent with no context should be able to read this file and run the loop effectively. Invest time making it excellent. **Write this file to the session directory** (shown in `init_experiment` output).
 
 ```markdown
 # Autoresearch: <goal>
@@ -36,7 +39,10 @@ This is the heart of the session. A fresh agent with no context should be able t
 - **Secondary**: <name>, <name>, ... — independent tradeoff monitors
 
 ## How to Run
-`./autoresearch.sh` — outputs `METRIC name=number` lines.
+`run_experiment({ command: "bash autoresearch.sh" })` — the tool resolves the session dir path automatically.
+
+## Project Directory
+<Full path to the project under test — where code changes happen.>
 
 ## Files in Scope
 <Every file the agent may modify, with a brief note on what it does.>
@@ -56,7 +62,7 @@ Update `autoresearch.md` periodically — especially the "What's Been Tried" sec
 
 ### `autoresearch.sh`
 
-Bash script (`set -euo pipefail`) that: pre-checks fast (syntax errors in <1s), runs the benchmark, and outputs structured lines to stdout. Keep the script fast — every second is multiplied by hundreds of runs.
+Bash script (`set -euo pipefail`) that: pre-checks fast (syntax errors in <1s), runs the benchmark, and outputs structured lines to stdout. **Write this file to the session directory.** The tool runs it with `cwd` set to the project directory, so all relative paths in the script resolve against the project.
 
 **For fast, noisy benchmarks** (< 5s), run the workload multiple times inside the script and report the median. This produces stable data points and makes the confidence score reliable from the start. Slow workloads (ML training, large builds) don't need this — single runs are fine.
 
@@ -86,7 +92,7 @@ Use `log_experiment`'s `asi` parameter to annotate each run with **whatever woul
 JSON config file that lives in the pi session's working directory (`ctx.cwd`). Supported fields:
 
 - **`maxIterations`** (number) — maximum experiments before auto-stopping.
-- **`workingDir`** (string) — override the directory for all autoresearch operations: file I/O (`autoresearch.jsonl`, `autoresearch.md`, `autoresearch.sh`, `autoresearch.checks.sh`, `autoresearch.ideas.md`), command execution, and git operations. Supports absolute paths or relative paths (resolved against `ctx.cwd`). The config file itself always stays in `ctx.cwd`. Fails if the directory doesn't exist.
+- **`workingDir`** (string) — override the project directory for command execution and git operations. The session directory is derived from this path. Supports absolute paths or relative paths (resolved against `ctx.cwd`). The config file itself always stays in `ctx.cwd`. Fails if the directory doesn't exist.
 
 ```json
 {
@@ -97,7 +103,7 @@ JSON config file that lives in the pi session's working directory (`ctx.cwd`). S
 
 ### `autoresearch.checks.sh` (optional)
 
-Bash script (`set -euo pipefail`) for backpressure/correctness checks: tests, types, lint, etc. **Only create this file when the user's constraints require correctness validation** (e.g., "tests must pass", "types must check").
+Bash script (`set -euo pipefail`) for backpressure/correctness checks: tests, types, lint, etc. **Write to the session directory.** Only create this file when the user's constraints require correctness validation (e.g., "tests must pass", "types must check"). The tool runs it with `cwd` set to the project directory.
 
 When this file exists:
 - Runs automatically after every **passing** benchmark in `run_experiment`.
@@ -135,7 +141,7 @@ pnpm typecheck 2>&1 | grep -i error || true
 
 ## Ideas Backlog
 
-When you discover complex but promising optimizations that you won't pursue right now, **append them as bullets to `autoresearch.ideas.md`**. Don't let good ideas get lost.
+When you discover complex but promising optimizations that you won't pursue right now, **append them as bullets to `autoresearch.ideas.md` in the session directory**. Don't let good ideas get lost.
 
 On resume (context limit, crash), check `autoresearch.ideas.md` — prune stale/tried entries, experiment with the rest. When all paths are exhausted, delete the file and write a final summary.
 

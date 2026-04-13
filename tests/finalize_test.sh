@@ -36,12 +36,8 @@ setup_repo() {
   # Autoresearch branch
   git checkout -b autoresearch/test-session --quiet
 
-  # Session files (should not end up in branches)
-  echo '{"type":"config","metricName":"ms","metricUnit":"ms","bestDirection":"lower"}' > autoresearch.jsonl
-  echo "# Autoresearch session" > autoresearch.md
-  echo "#!/bin/bash" > autoresearch.sh
-  echo "- try X" > autoresearch.ideas.md
-  git add -A && git commit -m "add session files" --quiet
+  # Session files now live in ~/.pi/autoresearch/ (outside the project git tree)
+  # so they're never committed to the autoresearch branch.
 
   # Kept experiment 1: modify file_a
   echo "optimized_a" > file_a.txt
@@ -174,14 +170,8 @@ EOF
 
   bash "$FINALIZE" $REPO/groups.json >/dev/null 2>&1 || { fail_test "no session artifacts" "Script failed"; cleanup_repo "$REPO"; return; }
 
-  for f in autoresearch.jsonl autoresearch.sh autoresearch.md autoresearch.ideas.md; do
-    if git show "autoresearch/test/01-all":"$f" &>/dev/null 2>&1; then
-      fail_test "no session artifacts" "Session file $f found in branch"
-      cleanup_repo "$REPO"
-      return
-    fi
-  done
-
+  # Session files no longer exist in the project directory, so this check
+  # is trivially satisfied. The branch should only contain code changes.
   pass "no session artifacts"
   cleanup_repo "$REPO"
 }
@@ -347,7 +337,7 @@ EOF
   # Check output contains key sections
   echo "$OUTPUT" | grep -q "Optimize file A" || { fail_test "summary output" "Missing group title in output"; rm -f "$GROUPS_JSON"; cleanup_repo "$REPO"; return; }
   echo "$OUTPUT" | grep -q "Cleanup" || { fail_test "summary output" "Missing cleanup in output"; rm -f "$GROUPS_JSON"; cleanup_repo "$REPO"; return; }
-  echo "$OUTPUT" | grep -q "autoresearch.ideas.md" || { fail_test "summary output" "Missing ideas in output"; rm -f "$GROUPS_JSON"; cleanup_repo "$REPO"; return; }
+  # Ideas backlog now lives in ~/.pi/autoresearch/ session dir, not referenced in finalize summary
 
   # No summary file should be written to disk
   [ ! -f "autoresearch-finalize-summary.md" ] || { fail_test "summary output" "Summary file written to disk — should only print"; rm -f "$GROUPS_JSON"; cleanup_repo "$REPO"; return; }
@@ -674,14 +664,10 @@ test_nested_session_artifacts() {
 
   git checkout -b autoresearch/nested-test --quiet
 
-  # Session files in a subdirectory (like world's libraries/javascript/polaris/)
-  echo '{"type":"config"}' > libs/polaris/autoresearch.jsonl
-  echo "# session" > libs/polaris/autoresearch.md
-  echo "#!/bin/bash" > libs/polaris/autoresearch.sh
-  echo "- idea" > libs/polaris/autoresearch.ideas.md
-  echo "#!/bin/bash" > libs/polaris/autoresearch.checks.sh
+  # Session files now live in ~/.pi/autoresearch/ (outside the project git tree)
+  # Only code changes are committed to the autoresearch branch.
   echo "optimized" > libs/polaris/component.ts
-  git add -A && git commit -m "optimize + session files" --quiet
+  git add -A && git commit -m "optimize component" --quiet
 
   local BASE FINAL
   BASE=$(git merge-base HEAD main)
@@ -707,19 +693,8 @@ EOF
   local OUTPUT
   OUTPUT=$(bash "$FINALIZE" "$REPO/groups.json" 2>&1) || { fail_test "nested session artifacts" "Script failed: $OUTPUT"; cleanup_repo "$REPO"; return; }
 
-  # Branch should only have component.ts, not any autoresearch.* files
+  # Branch should have component.ts
   local BRANCH="autoresearch/test/01-optimize"
-  for f in $(git diff-tree --no-commit-id --name-only -r "$(git rev-parse "$BRANCH")"); do
-    local base
-    base=$(basename "$f")
-    case "$base" in
-      autoresearch.*)
-        fail_test "nested session artifacts" "Session artifact '$f' leaked into branch"
-        cleanup_repo "$REPO"
-        return
-        ;;
-    esac
-  done
 
   # Verify the actual code file is there
   local CONTENT

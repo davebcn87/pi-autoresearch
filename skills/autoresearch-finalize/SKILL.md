@@ -81,6 +81,8 @@ After the script finishes, report to the user:
 - Overall metric improvement (baseline → best)
 - Show the cleanup commands from the script's summary output
 
+Note: All autoresearch session files (jsonl, md, sh, ideas) live in `~/.pi/autoresearch/<session>/`, not in the project directory. They are never included in branches.
+
 ## Edge Cases
 
 - **Only 1 kept experiment**: One branch is fine — don't force splits.

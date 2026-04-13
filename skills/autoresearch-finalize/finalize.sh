@@ -42,15 +42,6 @@ info() { echo -e "${GREEN}$1${NC}"; }
 cleanup_data() { if [ -d "${DATA_DIR:-}" ]; then rm -rf "$DATA_DIR"; fi; }
 fail() { cleanup_data; echo -e "${RED}ERROR: $1${NC}" >&2; exit 1; }
 
-# Session artifacts are matched by basename so they're excluded regardless of
-# directory depth — autoresearch runs may happen in subdirectories (e.g.
-# libs/polaris/autoresearch.jsonl) and none should leak into PR branches.
-is_session_file() {
-  local base
-  base=$(basename "$1")
-  case "$base" in autoresearch.*) return 0;; *) return 1;; esac
-}
-
 # ---------------------------------------------------------------------------
 # Parse
 # ---------------------------------------------------------------------------
@@ -115,7 +106,7 @@ collect_group_files() {
   : > "$DATA_DIR/$group_index.files"
   while IFS= read -r -d '' changed_file; do
     [ -n "$changed_file" ] || continue
-    is_session_file "$changed_file" || echo "$changed_file" >> "$DATA_DIR/$group_index.files"
+    echo "$changed_file" >> "$DATA_DIR/$group_index.files"
   done < <(git diff --name-only -z "$prev_commit" "$last_commit")
 }
 
@@ -289,9 +280,7 @@ verify_union_matches_original() {
   git commit --allow-empty -m "verify: union of all groups" --quiet
 
   local non_session_diff=""
-  for changed_file in $(git diff --name-only HEAD "$FINAL_TREE" 2>/dev/null); do
-    is_session_file "$changed_file" || non_session_diff="$non_session_diff $changed_file"
-  done
+  non_session_diff=$(git diff --name-only HEAD "$FINAL_TREE" 2>/dev/null | tr '\n' ' ')
 
   git checkout "$ORIG_BRANCH" --quiet 2>/dev/null || true
   git branch -D "$verify_branch" 2>/dev/null || true
@@ -306,22 +295,11 @@ verify_union_matches_original() {
   return 0
 }
 
+# Session artifacts no longer live in the project directory (they're in ~/.pi/autoresearch/)
+# so this check is a no-op. Kept as a placeholder for future validations.
 verify_no_session_artifacts() {
-  local clean=true
-  for branch in "${CREATED_BRANCHES[@]}"; do
-    for changed_file in $(git diff-tree --no-commit-id --name-only -r "$(git rev-parse "$branch")" 2>/dev/null); do
-      if is_session_file "$changed_file"; then
-        echo -e "${RED}✗ Session artifact '$changed_file' in branch $branch!${NC}"
-        clean=false
-      fi
-    done
-  done
-
-  if [ "$clean" = true ]; then
-    echo -e "${GREEN}✓ No session artifacts in any branch.${NC}"
-    return 0
-  fi
-  return 1
+  echo -e "${GREEN}✓ Session files live outside project directory.${NC}"
+  return 0
 }
 
 verify_no_empty_commits() {
@@ -403,17 +381,11 @@ print_summary() {
   done
 
   echo ""
-  echo "Cleanup — after merging, delete the autoresearch branch and session files:"
+  echo "Cleanup — after merging, delete the autoresearch branch:"
   echo ""
   echo "  git branch -D $ORIG_BRANCH"
-  echo "  rm -f autoresearch.jsonl autoresearch.sh autoresearch.md autoresearch.ideas.md"
-
-  if [ -f "autoresearch.ideas.md" ]; then
-    echo ""
-    echo "Ideas backlog (from autoresearch.ideas.md):"
-    echo ""
-    sed 's/^/  /' autoresearch.ideas.md
-  fi
+  echo ""
+  echo "Session files live in ~/.pi/autoresearch/ and don't need cleanup."
 
   echo ""
   if [ "$STASHED" = true ]; then
