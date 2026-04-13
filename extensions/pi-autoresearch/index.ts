@@ -126,6 +126,7 @@ interface AutoresearchRuntime {
   lastAutoResumeTime: number;
   experimentsThisSession: number;
   autoResumeTurns: number;
+  pendingCompactResume: boolean;
   lastRunChecks: { pass: boolean; output: string; duration: number } | null;
   lastRunDuration: number | null;
   runningExperiment: { startedAt: number; command: string } | null;
@@ -455,6 +456,7 @@ function currentResults(results: ExperimentResult[], segment: number): Experimen
 interface AutoresearchConfig {
   maxIterations?: number;
   workingDir?: string;
+  autoCompactResume?: boolean;
 }
 
 /** Read autoresearch.config.json from the given directory (always ctx.cwd) */
@@ -474,6 +476,10 @@ function readMaxExperiments(cwd: string): number | null {
   return (typeof config.maxIterations === "number" && config.maxIterations > 0)
     ? Math.floor(config.maxIterations)
     : null;
+}
+
+function readAutoCompactResume(cwd: string): boolean {
+  return readConfig(cwd).autoCompactResume === true;
 }
 
 /**
@@ -637,6 +643,7 @@ function createSessionRuntime(): AutoresearchRuntime {
     lastAutoResumeTime: 0,
     experimentsThisSession: 0,
     autoResumeTurns: 0,
+    pendingCompactResume: false,
     lastRunChecks: null,
     lastRunDuration: null,
     runningExperiment: null,
@@ -1037,6 +1044,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     runtime.lastAutoResumeTime = 0;
     runtime.experimentsThisSession = 0;
     runtime.autoResumeTurns = 0;
+    runtime.pendingCompactResume = false;
     runtime.iterationStartTokens = null;
     runtime.iterationTokenHistory = [];
     runtime.state = createExperimentState();
@@ -1339,6 +1347,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     if (overlayTui) overlayTui.requestRender();
 
     if (!runtime.autoresearchMode) return;
+    if (runtime.pendingCompactResume) return;
 
     // Don't auto-resume if no experiments ran this session (user likely stopped manually)
     if (runtime.experimentsThisSession === 0) return;
@@ -1592,10 +1601,56 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
       advanceIterationTracking(runtime, ctx);
       if (isContextExhausted(runtime, ctx)) {
+        if (readAutoCompactResume(ctx.cwd)) {
+          if (runtime.autoResumeTurns >= MAX_AUTORESUME_TURNS) {
+            runtime.autoresearchMode = false;
+            ctx.abort();
+            return {
+              content: [{ type: "text", text: `🛑 Context window almost full, but autoresearch auto-resume limit reached (${MAX_AUTORESUME_TURNS}). Start a new pi session to continue.` }],
+              details: {},
+            };
+          }
+
+          runtime.pendingCompactResume = true;
+          ctx.compact({
+            customInstructions:
+              "Focus on the active autoresearch loop: objective, current benchmark command and metric, current segment/baseline, recent kept vs discarded experiments, current code direction, and next most promising experiment. Preserve any instructions from autoresearch.md and note deferred ideas from autoresearch.ideas.md.",
+            onComplete: () => {
+              runtime.pendingCompactResume = false;
+              runtime.lastAutoResumeTime = Date.now();
+              runtime.autoResumeTurns++;
+
+              const resumeWorkDir = resolveWorkDir(ctx.cwd);
+              const ideasPath = path.join(resumeWorkDir, "autoresearch.ideas.md");
+              const hasIdeas = fs.existsSync(ideasPath);
+
+              let resumeMsg = "Autoresearch compacted due to low context. Resume the experiment loop — read autoresearch.md and git log for context.";
+              if (hasIdeas) {
+                resumeMsg += " Check autoresearch.ideas.md for promising paths to explore. Prune stale/tried ideas.";
+              }
+              resumeMsg += ` ${BENCHMARK_GUARDRAIL}`;
+              pi.sendUserMessage(resumeMsg);
+            },
+            onError: (error) => {
+              runtime.pendingCompactResume = false;
+              runtime.autoresearchMode = false;
+              ctx.ui.notify(
+                `Autoresearch compaction failed: ${error.message}. Start a new pi session to continue.`,
+                "error"
+              );
+            },
+          });
+          ctx.abort();
+          return {
+            content: [{ type: "text", text: "🧠 Context window almost full. Triggering compaction now — autoresearch will auto-resume after compaction completes." }],
+            details: {},
+          };
+        }
+
         runtime.autoresearchMode = false;
         ctx.abort();
         return {
-          content: [{ type: "text", text: "🛑 Context window almost full. Start a new pi session to continue — all progress is saved." }],
+          content: [{ type: "text", text: "🛑 Context window almost full. Start a new pi session to continue — all progress is saved. Set autoCompactResume: true in autoresearch.config.json to compact and auto-resume instead." }],
           details: {},
         };
       }
