@@ -1369,7 +1369,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     resumeMsg += ` ${BENCHMARK_GUARDRAIL}`;
 
     runtime.autoResumeTurns++;
-    pi.sendUserMessage(resumeMsg);
+    setTimeout(() => pi.sendUserMessage(resumeMsg), 0);
   });
 
   // When in autoresearch mode, add a static note to the system prompt.
