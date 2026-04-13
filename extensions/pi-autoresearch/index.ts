@@ -181,7 +181,7 @@ const InitParams = Type.Object({
   ),
 });
 
-const LogParams = Type.Object({
+export const LogParams = Type.Object({
   commit: Type.String({ description: "Git commit hash (short, 7 chars)" }),
   metric: Type.Number({
     description:
@@ -192,7 +192,8 @@ const LogParams = Type.Object({
     description: "Short description of what this experiment tried",
   }),
   metrics: Type.Optional(
-    Type.Record(Type.String(), Type.Number(), {
+    Type.Object({}, {
+      additionalProperties: Type.Number(),
       description:
         'Additional metrics to track as { name: value } pairs, e.g. { "compile_µs": 4200, "render_µs": 9800 }. These are shown alongside the primary metric for tradeoff monitoring.',
     })
@@ -204,7 +205,8 @@ const LogParams = Type.Object({
     })
   ),
   asi: Type.Optional(
-    Type.Record(Type.String(), Type.Unknown(), {
+    Type.Object({}, {
+      additionalProperties: Type.Unknown(),
       description:
         'Actionable Side Information — structured diagnostics for this run. Free-form key/value pairs. Parsed ASI from run_experiment output is merged automatically; use this to add or override fields.',
     })
