@@ -980,8 +980,6 @@ function renderDashboardLines(
 
 export default function autoresearchExtension(pi: ExtensionAPI) {
   const MAX_AUTORESUME_TURNS = 20;
-  const BENCHMARK_GUARDRAIL =
-    "Be careful not to overfit to the benchmarks and do not cheat on the benchmarks.";
 
   const runtimeStore = createRuntimeStore();
   const getSessionKey = (ctx: ExtensionContext) => ctx.sessionManager.getSessionId();
@@ -1366,7 +1364,6 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     if (hasIdeas) {
       resumeMsg += " Check autoresearch.ideas.md for promising paths to explore. Prune stale/tried ideas.";
     }
-    resumeMsg += ` ${BENCHMARK_GUARDRAIL}`;
 
     runtime.autoResumeTurns++;
     pi.sendUserMessage(resumeMsg);
@@ -1392,7 +1389,6 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       "\nUse init_experiment, run_experiment, and log_experiment tools. NEVER STOP until interrupted." +
       `\nExperiment rules: ${mdPath} — read this file at the start of every session and after compaction.` +
       "\nWrite promising but deferred optimizations as bullet points to autoresearch.ideas.md — don't let good ideas get lost." +
-      `\n${BENCHMARK_GUARDRAIL}` +
       "\nIf the user sends a follow-on message while an experiment is running, finish the current run_experiment + log_experiment cycle first, then address their message in the next iteration.";
 
     if (hasChecks) {
@@ -2884,11 +2880,11 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
       if (hasRules) {
         ctx.ui.notify("Autoresearch mode ON — rules loaded from autoresearch.md", "info");
-        pi.sendUserMessage(`Autoresearch mode active. ${trimmedArgs} ${BENCHMARK_GUARDRAIL}`);
+        pi.sendUserMessage(`Autoresearch mode active. ${trimmedArgs}`);
       } else {
         ctx.ui.notify("Autoresearch mode ON — no autoresearch.md found, setting up", "info");
         pi.sendUserMessage(
-          `Start autoresearch: ${trimmedArgs} ${BENCHMARK_GUARDRAIL}`
+          `Start autoresearch: ${trimmedArgs}`
         );
       }
     },
