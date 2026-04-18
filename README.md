@@ -249,6 +249,21 @@ pnpm typecheck
 1. **Install pi** — follow the instructions at [pi.dev](https://pi.dev/)
 2. **An API key** for your preferred LLM provider (configured in pi)
 
+### Using MiniMax
+
+Set `MINIMAX_API_KEY` to use [MiniMax](https://www.minimaxi.com/) models. pi-autoresearch registers two MiniMax models automatically:
+
+| Model | Description |
+|-------|-------------|
+| `MiniMax-M2.7` | Peak Performance. Ultimate Value. Master the Complex. |
+| `MiniMax-M2.7-highspeed` | Same performance, faster and more agile. |
+
+```bash
+export MINIMAX_API_KEY=your-api-key-here
+```
+
+Then select a MiniMax model in pi's model picker. API endpoint: `https://api.minimax.io`.
+
 ## Controlling costs
 
 Autoresearch loops run autonomously and can burn through tokens. Two ways to cap spend:
