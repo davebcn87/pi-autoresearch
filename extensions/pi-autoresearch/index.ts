@@ -979,6 +979,36 @@ function renderDashboardLines(
 // ---------------------------------------------------------------------------
 
 export default function autoresearchExtension(pi: ExtensionAPI) {
+  // ---------------------------------------------------------------------------
+  // Register MiniMax provider (MiniMax-M2.7 and MiniMax-M2.7-highspeed)
+  // Set MINIMAX_API_KEY to enable. Uses MiniMax's Anthropic-compatible endpoint.
+  // ---------------------------------------------------------------------------
+  pi.registerProvider("minimax", {
+    baseUrl: "https://api.minimax.io/anthropic",
+    apiKey: "MINIMAX_API_KEY",
+    api: "anthropic-messages",
+    models: [
+      {
+        id: "MiniMax-M2.7",
+        name: "MiniMax M2.7",
+        reasoning: true,
+        input: ["text"],
+        cost: { input: 0.3, output: 1.2, cacheRead: 0.06, cacheWrite: 0.375 },
+        contextWindow: 204800,
+        maxTokens: 131072,
+      },
+      {
+        id: "MiniMax-M2.7-highspeed",
+        name: "MiniMax M2.7 High Speed",
+        reasoning: true,
+        input: ["text"],
+        cost: { input: 0.6, output: 2.4, cacheRead: 0.06, cacheWrite: 0.375 },
+        contextWindow: 204800,
+        maxTokens: 131072,
+      },
+    ],
+  });
+
   const MAX_AUTORESUME_TURNS = 20;
   const BENCHMARK_GUARDRAIL =
     "Be careful not to overfit to the benchmarks and do not cheat on the benchmarks.";
