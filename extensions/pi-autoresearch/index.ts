@@ -253,20 +253,69 @@ const METRIC_LINE_PREFIX = "METRIC";
 /** Metric names that could cause prototype pollution if used as object keys */
 const DENIED_METRIC_NAMES = new Set(["__proto__", "constructor", "prototype"]);
 
-function parseMetricLines(output: string): Map<string, number> {
+const DENIED_METRIC_NAMES = new Set(["__proto__", "constructor", "prototype"]);
+
+interface ParseOptions {
+  allowNegative?: boolean;
+  onDuplicate?: "overwrite" | "ignore" | "error";
+  debug?: boolean;
+}
+
+function parseMetricLines(
+  output: string,
+  options: ParseOptions = {}
+): Map<string, number> {
+  const {
+    allowNegative = true,
+    onDuplicate = "overwrite",
+    debug = false,
+  } = options;
+
   const metrics = new Map<string, number>();
-  const regex = new RegExp(`^${METRIC_LINE_PREFIX}\\s+([\\w.µ]+)=(\\S+)\\s*$`, "gm");
-  let match;
+  const regex = new RegExp(
+    `^${METRIC_LINE_PREFIX}\\s+([\\w.µ]+)=(\\S+)\\s*$`,
+    "gm"
+  );
+
+  let match: RegExpExecArray | null;
+
   while ((match = regex.exec(output)) !== null) {
     const name = match[1];
-    if (DENIED_METRIC_NAMES.has(name)) continue;
-    const value = Number(match[2]);
-    if (Number.isFinite(value)) {
-      metrics.set(name, value);
+
+    if (DENIED_METRIC_NAMES.has(name)) {
+      if (debug) console.warn(`Skipped denied metric: ${name}`);
+      continue;
     }
+
+    const value = Number(match[2]);
+
+    if (!Number.isFinite(value)) {
+      if (debug) console.warn(`Invalid number for metric: ${name}`);
+      continue;
+    }
+
+    if (!allowNegative && value < 0) {
+      if (debug) console.warn(`Negative value skipped: ${name}`);
+      continue;
+    }
+
+    if (metrics.has(name)) {
+      if (onDuplicate === "ignore") continue;
+      if (onDuplicate === "error") {
+        throw new Error(`Duplicate metric found: ${name}`);
+      }
+      // overwrite by default
+    }
+
+    metrics.set(name, value);
   }
+
+  if (debug) {
+    console.log(`Parsed ${metrics.size} metrics`);
+  }
+
   return metrics;
-}
+    }
 
 /** Format a number with comma-separated thousands: 15586 → "15,586" */
 function commas(n: number): string {
