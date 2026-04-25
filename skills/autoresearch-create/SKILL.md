@@ -19,7 +19,8 @@ Autonomous experiment loop: try ideas, keep what works, discard what doesn't, ne
 2. `git checkout -b autoresearch/<goal>-<date>`
 3. Read the source files. Understand the workload deeply before writing anything.
 4. Write `autoresearch.md` and `autoresearch.sh` (see below). Commit both.
-5. `init_experiment` → run baseline → `log_experiment` → start looping immediately.
+5. **Seed with prior work:** Run `bash <AUTORESEARCH_SEED_SKILL_DIR>/seed.sh`. If it outputs anything, append it to `autoresearch.md` before the "What's Been Tried" section. This discovers seeder plugins and queries them for relevant prior wins (techniques, dead ends, metrics). Skip silently if no seeders are installed or no results found.
+6. `init_experiment` → run baseline → `log_experiment` → start looping immediately.
 
 ### `autoresearch.md`
 
