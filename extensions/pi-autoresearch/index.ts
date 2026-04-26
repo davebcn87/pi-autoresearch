@@ -1033,6 +1033,28 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   // Outlasts pi's internal retry (setTimeout 0) and compaction-continue
   // (setTimeout 100); see badlogic/pi-mono#2023, #2110.
   const SETTLED_WINDOW_MS = 800;
+  const STALE_EXTENSION_CONTEXT_MARKER = "extension ctx is stale after session replacement or reload";
+
+  const isStaleExtensionContextError = (error: unknown): boolean =>
+    error instanceof Error && error.message.includes(STALE_EXTENSION_CONTEXT_MARKER);
+
+  const runIgnoringStaleExtensionContext = (run: () => void): void => {
+    try {
+      run();
+    } catch (error) {
+      if (isStaleExtensionContextError(error)) return;
+      throw error;
+    }
+  };
+
+  const runIgnoringStaleExtensionContextAsync = async (run: () => Promise<void>): Promise<void> => {
+    try {
+      await run();
+    } catch (error) {
+      if (isStaleExtensionContextError(error)) return;
+      throw error;
+    }
+  };
 
   const runtimeStore = createRuntimeStore();
   const getSessionKey = (ctx: ExtensionContext) => ctx.sessionManager.getSessionId();
@@ -1086,7 +1108,9 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     pausePendingResume(runtime);
     runtime.pendingResumeMessage = message;
     runtime.pendingResumeTimer = setTimeout(
-      () => sendPendingResumeIfReady(ctx, runtime),
+      () => {
+        runIgnoringStaleExtensionContext(() => sendPendingResumeIfReady(ctx, runtime));
+      },
       SETTLED_WINDOW_MS,
     );
   };
@@ -1113,10 +1137,12 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     runtime.autoResumeTurns >= MAX_AUTORESUME_TURNS;
 
   const notifyAutoResumeLimitReached = (ctx: ExtensionContext): void => {
-    ctx.ui.notify(
-      `Autoresearch auto-resume limit reached (${MAX_AUTORESUME_TURNS} turns)`,
-      "info",
-    );
+    runIgnoringStaleExtensionContext(() => {
+      ctx.ui.notify(
+        `Autoresearch auto-resume limit reached (${MAX_AUTORESUME_TURNS} turns)`,
+        "info",
+      );
+    });
   };
 
   const hasIdeasFile = (ctx: ExtensionContext): boolean =>
@@ -1191,9 +1217,11 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
   const clearSessionUi = (ctx: ExtensionContext) => {
     clearOverlay();
-    if (ctx.hasUI) {
-      ctx.ui.setWidget("autoresearch", undefined);
-    }
+    runIgnoringStaleExtensionContext(() => {
+      if (ctx.hasUI) {
+        ctx.ui.setWidget("autoresearch", undefined);
+      }
+    });
   };
 
   const autoresearchHelp = () =>
@@ -1299,7 +1327,11 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   };
 
   const updateWidget = (ctx: ExtensionContext) => {
-    if (!ctx.hasUI) return;
+    let hasUI = false;
+    runIgnoringStaleExtensionContext(() => {
+      hasUI = ctx.hasUI;
+    });
+    if (!hasUI) return;
 
     const runtime = getRuntime(ctx);
     const state = runtime.state;
@@ -1460,48 +1492,64 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     }
   };
 
-  pi.on("session_start", async (_e, ctx) => reconstructState(ctx));
-  pi.on("session_tree", async (_e, ctx) => reconstructState(ctx));
+  pi.on("session_start", async (_e, ctx) => {
+    await runIgnoringStaleExtensionContextAsync(async () => reconstructState(ctx));
+  });
+  pi.on("session_tree", async (_e, ctx) => {
+    await runIgnoringStaleExtensionContextAsync(async () => reconstructState(ctx));
+  });
   pi.on("session_before_switch", async () => {
     clearOverlay();
   });
   pi.on("session_shutdown", async (_e, ctx) => {
-    clearSessionUi(ctx);
-    cancelPendingResume(getRuntime(ctx));
-    runtimeStore.clear(getSessionKey(ctx));
-    stopDashboardServer();
+    runIgnoringStaleExtensionContext(() => {
+      const sessionKey = getSessionKey(ctx);
+      const runtime = getRuntime(ctx);
+      cancelPendingResume(runtime);
+      clearSessionUi(ctx);
+      runtimeStore.clear(sessionKey);
+      stopDashboardServer();
+    });
   });
 
   pi.on("agent_start", async (_event, ctx) => {
-    const runtime = getRuntime(ctx);
-    runtime.experimentsThisSession = 0;
-    pausePendingResume(runtime);
+    await runIgnoringStaleExtensionContextAsync(async () => {
+      const runtime = getRuntime(ctx);
+      runtime.experimentsThisSession = 0;
+      pausePendingResume(runtime);
+    });
   });
 
   pi.on("session_before_compact", async (_event, ctx) => {
-    pausePendingResume(getRuntime(ctx));
+    await runIgnoringStaleExtensionContextAsync(async () => {
+      pausePendingResume(getRuntime(ctx));
+    });
   });
 
   pi.on("session_compact", async (_event, ctx) => {
-    reschedulePendingResume(ctx, getRuntime(ctx));
+    await runIgnoringStaleExtensionContextAsync(async () => {
+      reschedulePendingResume(ctx, getRuntime(ctx));
+    });
   });
 
   pi.on("agent_end", async (_event, ctx) => {
-    const runtime = getRuntime(ctx);
-    runtime.runningExperiment = null;
-    if (overlayTui) overlayTui.requestRender();
+    await runIgnoringStaleExtensionContextAsync(async () => {
+      const runtime = getRuntime(ctx);
+      runtime.runningExperiment = null;
+      if (overlayTui) overlayTui.requestRender();
 
-    if (hasPendingResume(runtime)) {
-      reschedulePendingResume(ctx, runtime);
-      return;
-    }
-    if (!shouldAutoResume(runtime)) return;
-    if (hasReachedAutoResumeLimit(runtime)) {
-      notifyAutoResumeLimitReached(ctx);
-      return;
-    }
+      if (hasPendingResume(runtime)) {
+        reschedulePendingResume(ctx, runtime);
+        return;
+      }
+      if (!shouldAutoResume(runtime)) return;
+      if (hasReachedAutoResumeLimit(runtime)) {
+        notifyAutoResumeLimitReached(ctx);
+        return;
+      }
 
-    schedulePendingResume(ctx, runtime, composeResumeMessage(ctx));
+      schedulePendingResume(ctx, runtime, composeResumeMessage(ctx));
+    });
   });
 
   // When in autoresearch mode, add a static note to the system prompt.
