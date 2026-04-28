@@ -4,9 +4,29 @@
   "type": "module",
   "description": "Autonomous experiment loop for pi — run, measure, keep or discard. Inspired by karpathy/autoresearch.",
   "keywords": [
-    "pi-package"
+    "pi-package",
+    "pi",
+    "pi-extension",
+    "autoresearch",
+    "experiment",
+    "optimization",
+    "benchmark",
+    "coding-agent"
   ],
   "license": "MIT",
+  "author": "David Cortés <477473+davebcn87@users.noreply.github.com>",
+  "homepage": "https://github.com/davebcn87/pi-autoresearch#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/davebcn87/pi-autoresearch.git"
+  },
+  "bugs": {
+    "url": "https://github.com/davebcn87/pi-autoresearch/issues"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.28.2",
   "pi": {
     "extensions": [
       "./extensions"
@@ -14,6 +34,18 @@
     "skills": [
       "./skills"
     ]
+  },
+  "files": [
+    "extensions",
+    "skills",
+    "assets",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "package.json"
+  ],
+  "scripts": {
+    "test": "node --experimental-strip-types --test tests/*.test.mjs"
   },
   "peerDependencies": {
     "@mariozechner/pi-ai": "*",

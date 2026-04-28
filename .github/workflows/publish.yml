@@ -1,0 +1,107 @@
+name: Publish to npm
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # tag + create release
+  id-token: write   # npm provenance
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.22.2
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: Read package metadata
+        id: pkg
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          NAME="$(node -p "require('./package.json').name")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "Detected $NAME@$VERSION"
+
+      - name: Verify CHANGELOG has an entry for this version
+        run: |
+          if ! grep -q "^## \[${{ steps.pkg.outputs.version }}\]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md is missing a section for [${{ steps.pkg.outputs.version }}]"
+            exit 1
+          fi
+
+      - name: Check if version is already published
+        id: check
+        run: |
+          if npm view "${{ steps.pkg.outputs.name }}@${{ steps.pkg.outputs.version }}" version > /dev/null 2>&1; then
+            echo "Version ${{ steps.pkg.outputs.version }} already on npm — skipping publish."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Version ${{ steps.pkg.outputs.version }} is new — will publish."
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check if GitHub release already exists
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "v${{ steps.pkg.outputs.version }}" > /dev/null 2>&1; then
+            echo "Release v${{ steps.pkg.outputs.version }} already exists — skipping release creation."
+            echo "create=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Release v${{ steps.pkg.outputs.version }} is missing — will create it."
+            echo "create=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install dependencies
+        if: steps.check.outputs.publish == 'true'
+        run: pnpm install --frozen-lockfile
+
+      - name: Run tests
+        if: steps.check.outputs.publish == 'true'
+        run: pnpm test
+
+      - name: Publish to npm (via OIDC trusted publisher)
+        if: steps.check.outputs.publish == 'true'
+        run: pnpm publish --access public --provenance --no-git-checks
+
+      - name: Extract release notes from CHANGELOG
+        if: steps.release.outputs.create == 'true'
+        id: notes
+        run: |
+          NOTES_FILE="$(mktemp)"
+          awk -v ver="${{ steps.pkg.outputs.version }}" '
+            $0 ~ "^## \\[" ver "\\]" { capture=1; next }
+            capture && /^## \[/ { exit }
+            capture { print }
+          ' CHANGELOG.md > "$NOTES_FILE"
+          if [ ! -s "$NOTES_FILE" ]; then
+            echo "_No changelog entry found for v${{ steps.pkg.outputs.version }}._" > "$NOTES_FILE"
+          fi
+          echo "file=$NOTES_FILE" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub release
+        if: steps.release.outputs.create == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${{ steps.pkg.outputs.version }}" \
+            --target "${{ github.sha }}" \
+            --title "v${{ steps.pkg.outputs.version }}" \
+            --notes-file "${{ steps.notes.outputs.file }}"
