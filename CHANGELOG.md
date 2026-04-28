@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.1] - 2026-04-28
+
+### Added
+
+- Published to the npm registry. Install with `pi install npm:pi-autoresearch`.
+- Releases now publish automatically from GitHub Actions via npm trusted publisher (OIDC) with provenance attestation.
+
 ## [1.1.0] - 2026-04-24
 
 ### Added
