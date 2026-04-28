@@ -26,7 +26,6 @@ export interface ReconstructedRun {
   timestamp: number;
   segment: number;
   confidence: number | null;
-  iterationTokens: number | null;
   asi?: Record<string, unknown>;
 }
 
@@ -38,7 +37,6 @@ export interface ReconstructedJsonlState {
   currentSegment: number;
   results: ReconstructedRun[];
   secondaryMetrics: ReconstructedMetricDef[];
-  iterationTokenHistory: number[];
 }
 
 const DEFAULT_METRIC_NAME = "metric";
@@ -96,7 +94,6 @@ function reconstructedState(): ReconstructedJsonlState {
     currentSegment: 0,
     results: [],
     secondaryMetrics: [],
-    iterationTokenHistory: [],
   };
 }
 
@@ -114,7 +111,6 @@ function nextSegment(state: ReconstructedJsonlState, segment: number): number {
 }
 
 function runFrom(entry: AutoresearchRunEntry, segment: number): ReconstructedRun {
-  const iterationTokens = typeof entry.iterationTokens === "number" ? entry.iterationTokens : null;
   return {
     commit: typeof entry.commit === "string" ? entry.commit : "",
     metric: typeof entry.metric === "number" ? entry.metric : 0,
@@ -124,14 +120,8 @@ function runFrom(entry: AutoresearchRunEntry, segment: number): ReconstructedRun
     timestamp: typeof entry.timestamp === "number" ? entry.timestamp : 0,
     segment,
     confidence: typeof entry.confidence === "number" ? entry.confidence : null,
-    iterationTokens,
     asi: asiFrom(entry.asi),
   };
-}
-
-function recordIterationTokens(state: ReconstructedJsonlState, run: ReconstructedRun): void {
-  if (run.iterationTokens === null || run.iterationTokens <= 0) return;
-  state.iterationTokenHistory.push(run.iterationTokens);
 }
 
 function registerSecondaryMetrics(state: ReconstructedJsonlState, metrics: Record<string, number>): void {
@@ -193,7 +183,6 @@ export function reconstructJsonlState(jsonlContent: string): ReconstructedJsonlS
 
     const run = runFrom(entry, segment);
     state.results.push(run);
-    recordIterationTokens(state, run);
     registerSecondaryMetrics(state, run.metrics);
   }
 

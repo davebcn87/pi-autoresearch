@@ -194,8 +194,7 @@ Create `autoresearch.config.json` in your pi session directory to customize beha
 ```json
 {
   "workingDir": "/path/to/project",
-  "maxIterations": 50,
-  "autoCompactResume": true
+  "maxIterations": 50
 }
 ```
 
@@ -203,7 +202,10 @@ Create `autoresearch.config.json` in your pi session directory to customize beha
 |-------|------|-------------|
 | `workingDir` | string | Override the directory for all autoresearch operations — file I/O, command execution, and git. Supports absolute or relative paths (resolved against the pi session cwd). The config file itself always stays in the session cwd. Fails if the directory doesn't exist. |
 | `maxIterations` | number | Maximum experiments before auto-stopping. The agent is told to stop and won't run more experiments until a new segment is initialized. |
-| `autoCompactResume` | boolean | When `true`, autoresearch keeps the context-exhaustion guard but proactively triggers compaction and auto-resumes the loop instead of stopping and asking for a fresh session. Default: `false` to preserve the original explicit handoff behavior. |
+
+### Long-running loops and context
+
+The loop is designed to run unattended across context limits. When pi's [auto-compaction](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/compaction.md) summarizes the older portion of the conversation, autoresearch detects the resulting idle and re-prompts the agent to re-read `autoresearch.md`, the tail of `autoresearch.jsonl`, `autoresearch.ideas.md`, and `git log` before continuing. All progress is persisted in those files, so the post-summary turn rehydrates from the source of truth instead of relying on whatever survived compaction. No tuning required — if pi's auto-compaction is enabled (the default), this just works.
 
 ---
 
@@ -301,7 +303,7 @@ Drop executable scripts in `autoresearch.hooks/` to run code at iteration bounda
 
 **Agent signal.** The agent writes `description` and `asi.*` fields in its `log_experiment` calls for its own future-self reasoning. The hook opportunistically mines whichever fields the agent naturally uses — `asi.hypothesis`, `asi.next_focus`, `description`, etc. There is no dedicated "hook input" field; the agent is unaware the hook exists.
 
-**Examples.** Reference scripts for both stages live at [`skills/autoresearch-hooks/examples/`](skills/autoresearch-hooks/examples/) — external search, qmd document search, persistent learnings, native notifications, git tagging, anti-thrash, idea rotator, hypothesis reflection, context rotation, token budget. Copy one to your session's `autoresearch.hooks/` directory, adapt, `chmod +x`.
+**Examples.** Reference scripts for both stages live at [`skills/autoresearch-hooks/examples/`](skills/autoresearch-hooks/examples/) — external search, qmd document search, persistent learnings, native notifications, git tagging, anti-thrash, idea rotator, hypothesis reflection, context rotation. Copy one to your session's `autoresearch.hooks/` directory, adapt, `chmod +x`.
 
 ---
 

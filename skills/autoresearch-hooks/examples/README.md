@@ -23,7 +23,6 @@ For the hook contract (stdin schemas, stdout handling, timeouts, observability),
 | [`idea-rotator.sh`](before/idea-rotator.sh) | Surface the next unchecked bullet from `autoresearch.ideas.md` as a steer nudge. |
 | [`hypothesis-reflection.sh`](before/hypothesis-reflection.sh) | On a discard, ask a cheap model to critique the failed hypothesis and propose adjacent directions. |
 | [`context-rotation.sh`](before/context-rotation.sh) | Trim an oversized `autoresearch.md`, archiving the tail. |
-| [`token-budget.sh`](before/token-budget.sh) | Nudge the agent when cumulative iteration tokens approach a budget. |
 
 ## `after/` — fires after each `log_experiment`
 

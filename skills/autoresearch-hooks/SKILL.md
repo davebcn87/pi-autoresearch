@@ -108,7 +108,7 @@ One JSON line. Parse with `jq`. Realistic example:
 
 Runnable reference scripts live in this skill's `examples/` directory — one file per pattern. Paths are resolved against the skill directory (parent of SKILL.md). Browse them for inspiration; they're not policy.
 
-- `examples/before/` — external search, qmd document search, anti-thrash, idea rotator, hypothesis reflection, context rotation, token budget
+- `examples/before/` — external search, qmd document search, anti-thrash, idea rotator, hypothesis reflection, context rotation
 - `examples/after/` — learnings journal, macOS notification on new best, auto-tag winning commits
 
 Each example is a complete, self-contained script with named constants, short helper functions, guard clauses, and intention-revealing names. Read the header comment for its purpose, copy to `autoresearch.hooks/<stage>.sh`, adapt.

@@ -44,11 +44,11 @@ test("reconstructJsonlState ignores hooks and preserves run segments", () => {
   const jsonl = [
     '{"type":"config","name":"Segmented session","metricName":"total_ms","metricUnit":"ms","bestDirection":"lower"}',
     '{"type":"hook","stage":"before","exit_code":0}',
-    '{"run":1,"commit":"aaa1111","metric":10,"status":"keep","description":"baseline","timestamp":1,"metrics":{"compile_ms":4},"iterationTokens":21}',
+    '{"run":1,"commit":"aaa1111","metric":10,"status":"keep","description":"baseline","timestamp":1,"metrics":{"compile_ms":4}}',
     '{"type":"hook","stage":"after","exit_code":0}',
     '{"type":"config","name":"Segmented session","metricName":"total_ms","metricUnit":"ms","bestDirection":"lower"}',
     '{"type":"hook","stage":"before","exit_code":0}',
-    '{"run":2,"commit":"bbb2222","metric":7,"status":"keep","description":"new baseline","timestamp":2,"metrics":{"render_ms":2},"iterationTokens":13}',
+    '{"run":2,"commit":"bbb2222","metric":7,"status":"keep","description":"new baseline","timestamp":2,"metrics":{"render_ms":2}}',
   ].join("\n");
 
   const state = reconstructJsonlState(jsonl);
@@ -57,7 +57,6 @@ test("reconstructJsonlState ignores hooks and preserves run segments", () => {
   assert.deepEqual(state.results.map((result) => result.metric), [10, 7]);
   assert.deepEqual(state.results.map((result) => result.segment), [0, 1]);
   assert.equal(state.currentSegment, 1);
-  assert.deepEqual(state.iterationTokenHistory, [21, 13]);
   assert.deepEqual(state.secondaryMetrics.map((metric) => metric.name), ["render_ms"]);
 });
 
