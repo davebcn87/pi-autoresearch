@@ -76,8 +76,6 @@ interface ExperimentResult {
   segment: number;
   /** Session-level confidence score at the time this result was logged. null if insufficient data. */
   confidence: number | null;
-  /** Context tokens consumed during this iteration (from run_experiment to log_experiment). null if unavailable. */
-  iterationTokens: number | null;
   /** Actionable Side Information — structured diagnostics for this run */
   asi?: ASI;
 }
@@ -137,17 +135,12 @@ interface LogDetails {
 interface AutoresearchRuntime {
   autoresearchMode: boolean;
   dashboardExpanded: boolean;
-  lastAutoResumeTime: number;
   experimentsThisSession: number;
   autoResumeTurns: number;
   lastRunChecks: { pass: boolean; output: string; duration: number } | null;
   lastRunDuration: number | null;
   runningExperiment: { startedAt: number; command: string } | null;
   state: ExperimentState;
-  /** Context tokens at the start of the current run_experiment call. null if not running. */
-  iterationStartTokens: number | null;
-  /** Token cost of each completed iteration (for predicting context exhaustion). */
-  iterationTokenHistory: number[];
   /** Pending auto-resume timer; cancelled when the agent starts a new run or compacts. */
   pendingResumeTimer: ReturnType<typeof setTimeout> | null;
   /** Resume message to send when the pending timer fires. */
@@ -369,49 +362,6 @@ function isBetter(
   direction: "lower" | "higher"
 ): boolean {
   return direction === "lower" ? current < best : current > best;
-}
-
-// Why 1.2: iterations vary in cost; 20% buffer prevents overflow on heavier iterations
-const CONTEXT_SAFETY_MARGIN = 1.2;
-
-function estimateTokensPerIteration(history: number[]): number {
-  const mean = history.reduce((a, b) => a + b, 0) / history.length;
-  const sorted = [...history].sort((a, b) => a - b);
-  const median = sorted[Math.floor(sorted.length / 2)];
-  // Why max(mean, median): outlier-heavy runs inflate the mean, skewed runs inflate the median.
-  // Taking the larger gives a conservative estimate that handles both distributions.
-  return Math.max(mean, median);
-}
-
-function hasRoomForNextIteration(history: number[], currentTokens: number, contextWindow: number): boolean {
-  if (history.length < 1) return true;
-  const projectedTokens = currentTokens + estimateTokensPerIteration(history) * CONTEXT_SAFETY_MARGIN;
-  return projectedTokens <= contextWindow;
-}
-
-function recordIterationTokens(runtime: AutoresearchRuntime, currentTokens: number | null): void {
-  if (runtime.iterationStartTokens == null || currentTokens == null) return;
-  const tokensConsumed = currentTokens - runtime.iterationStartTokens;
-  if (tokensConsumed <= 0) return;
-  runtime.iterationTokenHistory.push(tokensConsumed);
-}
-
-function lastIterationTokens(runtime: AutoresearchRuntime): number | null {
-  if (runtime.iterationTokenHistory.length === 0) return null;
-  return runtime.iterationTokenHistory[runtime.iterationTokenHistory.length - 1];
-}
-
-function advanceIterationTracking(runtime: AutoresearchRuntime, ctx: ExtensionContext): void {
-  const usage = ctx.getContextUsage();
-  if (usage?.tokens == null) return;
-  recordIterationTokens(runtime, usage.tokens);
-  runtime.iterationStartTokens = usage.tokens;
-}
-
-function isContextExhausted(runtime: AutoresearchRuntime, ctx: ExtensionContext): boolean {
-  const usage = ctx.getContextUsage();
-  if (usage?.tokens == null) return false;
-  return !hasRoomForNextIteration(runtime.iterationTokenHistory, usage.tokens, usage.contextWindow);
 }
 
 /** Compute the median of a numeric array (returns 0 for empty arrays) */
@@ -678,15 +628,12 @@ function createSessionRuntime(): AutoresearchRuntime {
   return {
     autoresearchMode: false,
     dashboardExpanded: false,
-    lastAutoResumeTime: 0,
     experimentsThisSession: 0,
     autoResumeTurns: 0,
     lastRunChecks: null,
     lastRunDuration: null,
     runningExperiment: null,
     state: createExperimentState(),
-    iterationStartTokens: null,
-    iterationTokenHistory: [],
     pendingResumeTimer: null,
     pendingResumeMessage: null,
   };
@@ -1026,7 +973,6 @@ function renderDashboardLines(
 
 export default function autoresearchExtension(pi: ExtensionAPI) {
   const MAX_AUTORESUME_TURNS = 20;
-  const AUTORESUME_COOLDOWN_MS = 5 * 60 * 1000;
   const BENCHMARK_GUARDRAIL =
     "Be careful not to overfit to the benchmarks and do not cheat on the benchmarks.";
 
@@ -1058,7 +1004,6 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
   const markAutoResumeSent = (runtime: AutoresearchRuntime): void => {
     runtime.autoResumeTurns++;
-    runtime.lastAutoResumeTime = Date.now();
   };
 
   const sendPendingResumeIfReady = (ctx: ExtensionContext, runtime: AutoresearchRuntime): void => {
@@ -1075,7 +1020,6 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       notifyAutoResumeLimitReached(ctx);
       return;
     }
-    if (isWithinAutoResumeCooldown(runtime)) return;
 
     cancelPendingResume(runtime);
     markAutoResumeSent(runtime);
@@ -1099,15 +1043,13 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   const hasRunExperimentsThisSession = (runtime: AutoresearchRuntime): boolean =>
     runtime.experimentsThisSession > 0;
 
-  const isWithinAutoResumeCooldown = (runtime: AutoresearchRuntime): boolean =>
-    Date.now() - runtime.lastAutoResumeTime < AUTORESUME_COOLDOWN_MS;
+  // Why the experiment gate: a chat-only turn would otherwise loop forever,
+  // because every agent_end would re-prompt the agent, which would chat again.
+  const shouldAutoResumeAfterTurn = (runtime: AutoresearchRuntime): boolean =>
+    runtime.autoresearchMode && hasRunExperimentsThisSession(runtime);
 
-  const shouldAutoResume = (runtime: AutoresearchRuntime): boolean => {
-    if (!runtime.autoresearchMode) return false;
-    if (!hasRunExperimentsThisSession(runtime)) return false;
-    if (isWithinAutoResumeCooldown(runtime)) return false;
-    return true;
-  };
+  const shouldAutoResumeAfterCompact = (runtime: AutoresearchRuntime): boolean =>
+    runtime.autoresearchMode;
 
   const hasReachedAutoResumeLimit = (runtime: AutoresearchRuntime): boolean =>
     runtime.autoResumeTurns >= MAX_AUTORESUME_TURNS;
@@ -1124,11 +1066,13 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
   const composeResumeMessage = (ctx: ExtensionContext): string => {
     const parts = [
-      "Autoresearch loop ended (likely context limit). Resume the experiment loop — read autoresearch.md and git log for context.",
+      "Autoresearch loop ended (likely context limit and auto-compaction).",
+      "Re-read the persisted autoresearch context before continuing: autoresearch.md (rules), the tail of autoresearch.jsonl (recent kept/discarded runs and ASI), and git log (commits map 1:1 to kept experiments).",
     ];
     if (hasIdeasFile(ctx)) {
-      parts.push("Check autoresearch.ideas.md for promising paths to explore. Prune stale/tried ideas.");
+      parts.push("Then check autoresearch.ideas.md for promising paths to explore and prune stale/tried ideas.");
     }
+    parts.push("Resume the experiment loop with the next most promising hypothesis.");
     parts.push(BENCHMARK_GUARDRAIL);
     return parts.join(" ");
   };
@@ -1222,11 +1166,8 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     runtime.lastRunChecks = null;
     runtime.lastRunDuration = null;
     runtime.runningExperiment = null;
-    runtime.lastAutoResumeTime = 0;
     runtime.experimentsThisSession = 0;
     runtime.autoResumeTurns = 0;
-    runtime.iterationStartTokens = null;
-    runtime.iterationTokenHistory = [];
     runtime.state = createExperimentState();
 
     let state = runtime.state;
@@ -1250,7 +1191,6 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
           metrics: { ...result.metrics },
         }));
         state.secondaryMetrics = reconstructed.secondaryMetrics.map((metric) => ({ ...metric }));
-        runtime.iterationTokenHistory = [...reconstructed.iterationTokenHistory];
 
         if (state.results.length > 0) {
           loadedFromJsonl = true;
@@ -1478,30 +1418,36 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     pausePendingResume(runtime);
   });
 
+  const ensurePendingResume = (
+    ctx: ExtensionContext,
+    gate: (runtime: AutoresearchRuntime) => boolean,
+  ): void => {
+    const runtime = getRuntime(ctx);
+    if (hasPendingResume(runtime)) {
+      reschedulePendingResume(ctx, runtime);
+      return;
+    }
+    if (!gate(runtime)) return;
+    if (hasReachedAutoResumeLimit(runtime)) {
+      notifyAutoResumeLimitReached(ctx);
+      return;
+    }
+    schedulePendingResume(ctx, runtime, composeResumeMessage(ctx));
+  };
+
   pi.on("session_before_compact", async (_event, ctx) => {
     pausePendingResume(getRuntime(ctx));
   });
 
   pi.on("session_compact", async (_event, ctx) => {
-    reschedulePendingResume(ctx, getRuntime(ctx));
+    ensurePendingResume(ctx, shouldAutoResumeAfterCompact);
   });
 
   pi.on("agent_end", async (_event, ctx) => {
     const runtime = getRuntime(ctx);
     runtime.runningExperiment = null;
     if (overlayTui) overlayTui.requestRender();
-
-    if (hasPendingResume(runtime)) {
-      reschedulePendingResume(ctx, runtime);
-      return;
-    }
-    if (!shouldAutoResume(runtime)) return;
-    if (hasReachedAutoResumeLimit(runtime)) {
-      notifyAutoResumeLimitReached(ctx);
-      return;
-    }
-
-    schedulePendingResume(ctx, runtime, composeResumeMessage(ctx));
+    ensurePendingResume(ctx, shouldAutoResumeAfterTurn);
   });
 
   // When in autoresearch mode, add a static note to the system prompt.
@@ -1626,7 +1572,6 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
       const wasInactive = !runtime.autoresearchMode;
       runtime.autoresearchMode = true;
-      runtime.iterationStartTokens = ctx.getContextUsage()?.tokens ?? null;
       updateWidget(ctx);
 
       if (wasInactive) {
@@ -1734,16 +1679,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         };
       }
 
-      advanceIterationTracking(runtime, ctx);
-      if (isContextExhausted(runtime, ctx)) {
-        runtime.autoresearchMode = false;
-        ctx.abort();
-        return {
-          content: [{ type: "text", text: "🛑 Context window almost full. Start a new pi session to continue — all progress is saved." }],
-          details: {},
-        };
-      }
-
+      // TODO(/tree): replace compaction-based resume with a checkpoint-per-iteration model.
       runtime.runningExperiment = { startedAt: Date.now(), command: params.command };
       updateWidget(ctx);
       if (overlayTui) overlayTui.requestRender();
@@ -2270,8 +2206,6 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         ? params.asi as ASI
         : undefined;
 
-      const iterationTokens = lastIterationTokens(runtime);
-
       const experiment: ExperimentResult = {
         commit: params.commit.slice(0, 7),
         metric: params.metric,
@@ -2281,7 +2215,6 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         timestamp: Date.now(),
         segment: state.currentSegment,
         confidence: null,
-        iterationTokens,
         asi: mergedASI,
       };
 
@@ -2973,10 +2906,8 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
         runtime.autoresearchMode = false;
         runtime.dashboardExpanded = false;
-        runtime.lastAutoResumeTime = 0;
         runtime.autoResumeTurns = 0;
         runtime.experimentsThisSession = 0;
-        runtime.pendingCompactResume = false;
         runtime.lastRunChecks = null;
         runtime.lastRunDuration = null;
         runtime.runningExperiment = null;
@@ -3000,7 +2931,6 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         const jsonlPath = autoresearchJsonlPath(resolveWorkDir(ctx.cwd));
         runtime.autoresearchMode = false;
         runtime.dashboardExpanded = false;
-        runtime.lastAutoResumeTime = 0;
         runtime.autoResumeTurns = 0;
         runtime.experimentsThisSession = 0;
         runtime.lastRunChecks = null;
