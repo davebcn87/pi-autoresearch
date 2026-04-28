@@ -8,6 +8,12 @@ All notable changes to this project will be documented in this file.
 
 - Long-running loops now ride pi's auto-compaction instead of stopping. When pi summarizes older messages on context overflow, autoresearch detects the resulting idle and re-prompts the agent to re-read `autoresearch.md`, the tail of `autoresearch.jsonl`, `autoresearch.ideas.md`, and `git log` before continuing.
 
+### Fixed
+
+- Manual `/compact` mid-iteration no longer leaves the loop stuck. `session_compact` now schedules a fresh resume even when no `agent_end` fired for the interrupted turn (so no `pendingResumeMessage` was waiting to be rescheduled). Same fix covers split-turn auto-compactions.
+- Compaction during agent setup (before the first `log_experiment`) now resumes. The post-turn gate still requires an experiment this turn to avoid resuming on plain chat replies, but the post-compaction gate is permissive — compaction itself is evidence the loop should continue.
+- Rapid back-to-back compactions all resume. Dropped the 5-minute auto-resume cooldown that was sized for a different threat model (chat-only `agent_end` loops); the experiment-this-turn gate plus `MAX_AUTORESUME_TURNS = 20` already cover the looping cases the cooldown was guarding against.
+
 ### Removed
 
 - Removed the next-iteration token-cost prediction and its `isContextExhausted` guard — pi's auto-compaction handles overflow, so autoresearch no longer needs to estimate or stop early.
