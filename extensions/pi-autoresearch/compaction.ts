@@ -12,10 +12,14 @@ import * as path from "node:path";
 
 import {
   reconstructJsonlState,
+  type ReconstructedJsonlState,
   type ReconstructedRun,
 } from "./jsonl.ts";
 
 const RECENT_RUN_LIMIT = 50;
+
+type RunStatus = ReconstructedRun["status"];
+type StatusCounts = Record<RunStatus, number>;
 
 export interface AutoresearchSummaryPaths {
   workDir: string;
@@ -38,14 +42,20 @@ export function autoresearchSummaryPathsFor(workDir: string): AutoresearchSummar
  * Returns a markdown string that is itself the entire compaction summary.
  */
 export function buildAutoresearchCompactionSummary(paths: AutoresearchSummaryPaths): string {
+  const state = loadState(paths.jsonlPath);
   const sections = [
     headerSection(),
+    sessionSection(state),
     rulesSection(paths.mdPath),
     ideasSection(paths.ideasPath),
-    recentRunsSection(paths.jsonlPath),
+    recentRunsSection(state),
     nextStepSection(),
   ];
   return sections.filter(Boolean).join("\n\n");
+}
+
+function loadState(jsonlPath: string): ReconstructedJsonlState {
+  return reconstructJsonlState(readFileOrEmpty(jsonlPath));
 }
 
 // ---------------------------------------------------------------------------
@@ -61,6 +71,72 @@ function headerSection(): string {
   ].join("\n");
 }
 
+function sessionSection(state: ReconstructedJsonlState): string {
+  const runs = currentSegmentRuns(state);
+  const lines = [
+    "## Session",
+    "",
+    `Goal: ${state.name ?? "—"}`,
+    `Metric: ${state.metricName} — ${state.bestDirection} is better`,
+    runCountLine(runs),
+    ...baselineAndBestLines(runs, state.bestDirection, state.metricUnit),
+  ];
+  return lines.join("\n");
+}
+
+function currentSegmentRuns(state: ReconstructedJsonlState): ReconstructedRun[] {
+  return state.results.filter((run) => run.segment === state.currentSegment);
+}
+
+function runCountLine(runs: ReconstructedRun[]): string {
+  if (runs.length === 0) return "Runs so far: 0";
+  const counts = countByStatus(runs);
+  const parts = [
+    `${counts.keep} keep`,
+    counts.discard ? `${counts.discard} discard` : "",
+    counts.crash ? `${counts.crash} crash` : "",
+    counts.checks_failed ? `${counts.checks_failed} checks_failed` : "",
+  ].filter(Boolean);
+  return `Runs so far: ${runs.length} (${parts.join(" · ")})`;
+}
+
+function countByStatus(runs: ReconstructedRun[]): StatusCounts {
+  const counts: StatusCounts = { keep: 0, discard: 0, crash: 0, checks_failed: 0 };
+  for (const run of runs) counts[run.status]++;
+  return counts;
+}
+
+function baselineAndBestLines(
+  runs: ReconstructedRun[],
+  direction: "lower" | "higher",
+  unit: string,
+): string[] {
+  const baseline = runs[0];
+  if (!baseline) return [];
+  const lines = [`Baseline (#${baseline.run}): ${formatMetricWithUnit(baseline.metric, unit)}`];
+  const best = bestRun(runs, direction);
+  if (best && best.run !== baseline.run) {
+    lines.push(
+      `Best     (#${best.run}): ${formatMetricWithUnit(best.metric, unit)}${formatDelta(best.metric, baseline.metric)}`,
+    );
+  }
+  return lines;
+}
+
+function formatMetricWithUnit(value: number, unit: string): string {
+  return `${formatMetric(value)}${unit}`;
+}
+
+function bestRun(runs: ReconstructedRun[], direction: "lower" | "higher"): ReconstructedRun | null {
+  const kept = runs.filter((run) => run.status === "keep" && Number.isFinite(run.metric));
+  if (kept.length === 0) return null;
+  return kept.reduce((best, run) => (isBetter(run.metric, best.metric, direction) ? run : best));
+}
+
+function isBetter(value: number, current: number, direction: "lower" | "higher"): boolean {
+  return direction === "lower" ? value < current : value > current;
+}
+
 function rulesSection(mdPath: string): string {
   const content = readTrimmedFile(mdPath);
   if (!content) return "";
@@ -73,12 +149,12 @@ function ideasSection(ideasPath: string): string {
   return `## Ideas Backlog (autoresearch.ideas.md)\n\n${content}`;
 }
 
-function recentRunsSection(jsonlPath: string): string {
-  const runs = recentRuns(jsonlPath);
+function recentRunsSection(state: ReconstructedJsonlState): string {
+  const runs = state.results.slice(-RECENT_RUN_LIMIT);
   if (runs.length === 0) {
     return "## Recent Runs\n\nNo runs yet — start with the first hypothesis.";
   }
-  const lines = runs.map((run) => formatRunLine(run, baselineFor(run, runs)));
+  const lines = runs.map((run) => formatRunLine(run, baselineFor(run, state.results)));
   return [
     `## Recent Runs (last ${runs.length})`,
     "",
@@ -103,14 +179,7 @@ function nextStepSection(): string {
 // Recent runs
 // ---------------------------------------------------------------------------
 
-function recentRuns(jsonlPath: string): ReconstructedRun[] {
-  const content = readFileOrEmpty(jsonlPath);
-  if (!content) return [];
-  const state = reconstructJsonlState(content);
-  return state.results.slice(-RECENT_RUN_LIMIT);
-}
-
-/** Baseline metric for a run = first run in the same segment within the visible window. */
+/** Baseline metric for a run = first run in the same segment across full reconstructed state. */
 function baselineFor(run: ReconstructedRun, all: ReconstructedRun[]): number | null {
   const sameSegment = all.find((other) => other.segment === run.segment);
   return sameSegment?.metric ?? null;

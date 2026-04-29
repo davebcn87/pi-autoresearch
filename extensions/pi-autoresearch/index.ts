@@ -1067,6 +1067,14 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   };
 
   const composeResumeMessage = (_ctx: ExtensionContext): string => {
+    return [
+      "Run the next iteration now.",
+      "Use the persisted autoresearch state as needed, pick the most promising hypothesis, then call run_experiment + log_experiment.",
+      BENCHMARK_GUARDRAIL,
+    ].join(" ");
+  };
+
+  const composeCompactionResumeMessage = (_ctx: ExtensionContext): string => {
     // The compaction summary already contains the rules, ideas, and recent
     // runs — so this resume message just kicks the loop forward.
     return [
@@ -1437,6 +1445,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   const ensurePendingResume = (
     ctx: ExtensionContext,
     gate: (runtime: AutoresearchRuntime) => boolean,
+    composeMessage: (ctx: ExtensionContext) => string = composeResumeMessage,
   ): void => {
     const runtime = getRuntime(ctx);
     if (hasPendingResume(runtime)) {
@@ -1448,7 +1457,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       notifyAutoResumeLimitReached(ctx);
       return;
     }
-    schedulePendingResume(ctx, runtime, composeResumeMessage(ctx));
+    schedulePendingResume(ctx, runtime, composeMessage(ctx));
   };
 
   pi.on("session_before_compact", async (event, ctx) => {
@@ -1457,7 +1466,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   });
 
   pi.on("session_compact", async (_event, ctx) => {
-    ensurePendingResume(ctx, shouldAutoResumeAfterCompact);
+    ensurePendingResume(ctx, shouldAutoResumeAfterCompact, composeCompactionResumeMessage);
   });
 
   pi.on("agent_end", async (_event, ctx) => {
