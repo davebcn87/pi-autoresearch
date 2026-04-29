@@ -16,6 +16,7 @@
 import type {
   ExtensionAPI,
   ExtensionContext,
+  SessionBeforeCompactEvent,
   Theme,
 } from "@mariozechner/pi-coding-agent";
 import { truncateTail, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize } from "@mariozechner/pi-coding-agent";
@@ -45,6 +46,10 @@ import {
   extractAutoresearchSessionName,
   reconstructJsonlState,
 } from "./jsonl.ts";
+import {
+  autoresearchSummaryPathsFor,
+  buildAutoresearchCompactionSummary,
+} from "./compaction.ts";
 
 // ---------------------------------------------------------------------------
 // Experiment output limits (sent to LLM — keep small to save context)
@@ -1061,20 +1066,39 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     );
   };
 
-  const hasIdeasFile = (ctx: ExtensionContext): boolean =>
-    fs.existsSync(autoresearchIdeasPath(resolveWorkDir(ctx.cwd)));
+  const composeResumeMessage = (_ctx: ExtensionContext): string => {
+    return [
+      "Run the next iteration now.",
+      "Use the persisted autoresearch state as needed, pick the most promising hypothesis, then call run_experiment + log_experiment.",
+      BENCHMARK_GUARDRAIL,
+    ].join(" ");
+  };
 
-  const composeResumeMessage = (ctx: ExtensionContext): string => {
-    const parts = [
-      "Autoresearch loop ended (likely context limit and auto-compaction).",
-      "Re-read the persisted autoresearch context before continuing: autoresearch.md (rules), the tail of autoresearch.jsonl (recent kept/discarded runs and ASI), and git log (commits map 1:1 to kept experiments).",
-    ];
-    if (hasIdeasFile(ctx)) {
-      parts.push("Then check autoresearch.ideas.md for promising paths to explore and prune stale/tried ideas.");
-    }
-    parts.push("Resume the experiment loop with the next most promising hypothesis.");
-    parts.push(BENCHMARK_GUARDRAIL);
-    return parts.join(" ");
+  const composeCompactionResumeMessage = (_ctx: ExtensionContext): string => {
+    // The compaction summary already contains the rules, ideas, and recent
+    // runs — so this resume message just kicks the loop forward.
+    return [
+      "Run the next iteration now.",
+      "Pick the most promising hypothesis from the ideas backlog or the latest `next:` hints in recent runs, then call run_experiment + log_experiment.",
+      "Do not re-read autoresearch.md or autoresearch.jsonl — the compaction summary already contains them.",
+      BENCHMARK_GUARDRAIL,
+    ].join(" ");
+  };
+
+  const autoresearchCompactionFor = (
+    ctx: ExtensionContext,
+    event: SessionBeforeCompactEvent,
+  ) => {
+    if (!getRuntime(ctx).autoresearchMode) return undefined;
+    return {
+      compaction: {
+        summary: buildAutoresearchCompactionSummary(
+          autoresearchSummaryPathsFor(resolveWorkDir(ctx.cwd)),
+        ),
+        firstKeptEntryId: event.preparation.firstKeptEntryId,
+        tokensBefore: event.preparation.tokensBefore,
+      },
+    };
   };
 
   const sendWhenReady = (ctx: ExtensionContext, message: string): void => {
@@ -1421,6 +1445,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   const ensurePendingResume = (
     ctx: ExtensionContext,
     gate: (runtime: AutoresearchRuntime) => boolean,
+    composeMessage: (ctx: ExtensionContext) => string = composeResumeMessage,
   ): void => {
     const runtime = getRuntime(ctx);
     if (hasPendingResume(runtime)) {
@@ -1432,15 +1457,16 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       notifyAutoResumeLimitReached(ctx);
       return;
     }
-    schedulePendingResume(ctx, runtime, composeResumeMessage(ctx));
+    schedulePendingResume(ctx, runtime, composeMessage(ctx));
   };
 
-  pi.on("session_before_compact", async (_event, ctx) => {
+  pi.on("session_before_compact", async (event, ctx) => {
     pausePendingResume(getRuntime(ctx));
+    return autoresearchCompactionFor(ctx, event);
   });
 
   pi.on("session_compact", async (_event, ctx) => {
-    ensurePendingResume(ctx, shouldAutoResumeAfterCompact);
+    ensurePendingResume(ctx, shouldAutoResumeAfterCompact, composeCompactionResumeMessage);
   });
 
   pi.on("agent_end", async (_event, ctx) => {

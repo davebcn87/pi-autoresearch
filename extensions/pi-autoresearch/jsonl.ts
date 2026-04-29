@@ -18,6 +18,7 @@ export interface ReconstructedMetricDef {
 }
 
 export interface ReconstructedRun {
+  run: number;
   commit: string;
   metric: number;
   metrics: Record<string, number>;
@@ -112,6 +113,7 @@ function nextSegment(state: ReconstructedJsonlState, segment: number): number {
 
 function runFrom(entry: AutoresearchRunEntry, segment: number): ReconstructedRun {
   return {
+    run: typeof entry.run === "number" ? entry.run : 0,
     commit: typeof entry.commit === "string" ? entry.commit : "",
     metric: typeof entry.metric === "number" ? entry.metric : 0,
     metrics: metricMapFrom(entry.metrics),
