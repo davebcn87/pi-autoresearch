@@ -8,7 +8,7 @@
  * - `run_experiment` tool — runs any command, times it, captures output, detects pass/fail
  * - `log_experiment` tool — records results with session-persisted state
  * - Status widget showing experiment count + best metric
- * - Ctrl+Shift+T toggle to expand/collapse full dashboard inline above the editor
+ * - Configurable shortcuts to expand/collapse and fullscreen the dashboard
  * - Adds autoresearch guidance to the system prompt and points the agent at autoresearch.md
  * - Injects autoresearch.md into context on every turn via before_agent_start
  */
@@ -50,6 +50,7 @@ import {
   autoresearchSummaryPathsFor,
   buildAutoresearchCompactionSummary,
 } from "./compaction.ts";
+import { resolveAutoresearchShortcuts } from "./shortcuts.ts";
 
 // ---------------------------------------------------------------------------
 // Experiment output limits (sent to LLM — keep small to save context)
@@ -676,7 +677,7 @@ function renderDashboardLines(
   width: number,
   th: Theme,
   maxRows: number = 6,
-  headerHint?: string
+  headerHints: string[] = []
 ): string[] {
   const lines: string[] = [];
 
@@ -860,12 +861,8 @@ function renderDashboardLines(
     `${th.fg("muted", "description")}`;
 
   lines.push(
-    headerHint
-      ? appendRightAlignedAdaptiveHint(headerLine, width, th, [
-          headerHint,
-          "ctrl+shift+t collapse • full: ctrl+shift+f",
-          "ctrl+shift+t • ctrl+shift+f",
-        ])
+    headerHints.length > 0
+      ? appendRightAlignedAdaptiveHint(headerLine, width, th, headerHints)
       : truncateToWidth(headerLine, width, "…", true)
   );
   lines.push(
@@ -984,6 +981,26 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   // Outlasts pi's internal retry (setTimeout 0) and compaction-continue
   // (setTimeout 100); see badlogic/pi-mono#2023, #2110.
   const SETTLED_WINDOW_MS = 800;
+  const shortcuts = resolveAutoresearchShortcuts();
+
+  const dashboardHintVariants = (toggleAction: "expand" | "collapse"): string[] => {
+    const toggle = shortcuts.toggleDashboard
+      ? `${shortcuts.toggleDashboard} ${toggleAction}`
+      : null;
+    const fullscreen = shortcuts.fullscreenDashboard
+      ? `${shortcuts.fullscreenDashboard} fullscreen`
+      : null;
+
+    if (toggle && fullscreen) {
+      return [
+        `${toggle} • ${fullscreen}`,
+        `${toggle} • full: ${shortcuts.fullscreenDashboard}`,
+        `${shortcuts.toggleDashboard} • ${shortcuts.fullscreenDashboard}`,
+      ];
+    }
+
+    return [toggle, fullscreen].filter((hint): hint is string => hint !== null);
+  };
 
   const runtimeStore = createRuntimeStore();
   const getSessionKey = (ctx: ExtensionContext) => ctx.sessionManager.getSessionId();
@@ -1320,7 +1337,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
               safeWidth,
               theme,
               rows,
-              "ctrl+shift+t collapse • ctrl+shift+f fullscreen"
+              dashboardHintVariants("collapse")
             ),
           ];
         },
@@ -1411,12 +1428,11 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
           if (state.name) optional.push(theme.fg("dim", ` │ ${state.name}`));
 
           const left = [...essential, ...optional].join("");
+          const hintVariants = dashboardHintVariants("expand");
           return [
-            appendRightAlignedAdaptiveHint(left, safeWidth, theme, [
-              "ctrl+shift+t expand • ctrl+shift+f fullscreen",
-              "ctrl+shift+t expand • full: ctrl+shift+f",
-              "ctrl+shift+t • ctrl+shift+f",
-            ]),
+            hintVariants.length > 0
+              ? appendRightAlignedAdaptiveHint(left, safeWidth, theme, hintVariants)
+              : truncateToWidth(left, safeWidth, "…", true),
           ];
         },
         invalidate(): void {},
@@ -2525,43 +2541,46 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   });
 
   // -----------------------------------------------------------------------
-  // Ctrl+Shift+T — toggle dashboard expand/collapse
+  // Toggle dashboard expand/collapse shortcut
   // -----------------------------------------------------------------------
 
-  pi.registerShortcut("ctrl+shift+t", {
-    description: "Toggle autoresearch dashboard",
-    handler: async (ctx) => {
-      const runtime = getRuntime(ctx);
-      const state = runtime.state;
-      if (state.results.length === 0) {
-        if (!runtime.autoresearchMode && !fs.existsSync(autoresearchMdPath(resolveWorkDir(ctx.cwd)))) {
-          ctx.ui.notify("No experiments yet — run /autoresearch to get started", "info");
-        } else {
-          ctx.ui.notify("No experiments yet", "info");
+  if (shortcuts.toggleDashboard) {
+    pi.registerShortcut(shortcuts.toggleDashboard, {
+      description: "Toggle autoresearch dashboard",
+      handler: async (ctx) => {
+        const runtime = getRuntime(ctx);
+        const state = runtime.state;
+        if (state.results.length === 0) {
+          if (!runtime.autoresearchMode && !fs.existsSync(autoresearchMdPath(resolveWorkDir(ctx.cwd)))) {
+            ctx.ui.notify("No experiments yet — run /autoresearch to get started", "info");
+          } else {
+            ctx.ui.notify("No experiments yet", "info");
+          }
+          return;
         }
-        return;
-      }
-      runtime.dashboardExpanded = !runtime.dashboardExpanded;
-      updateWidget(ctx);
-    },
-  });
+        runtime.dashboardExpanded = !runtime.dashboardExpanded;
+        updateWidget(ctx);
+      },
+    });
+  }
 
   // -----------------------------------------------------------------------
-  // Ctrl+Shift+F — fullscreen scrollable dashboard overlay
+  // Fullscreen scrollable dashboard overlay shortcut
   // -----------------------------------------------------------------------
 
-  pi.registerShortcut("ctrl+shift+f", {
-    description: "Fullscreen autoresearch dashboard",
-    handler: async (ctx) => {
-      const runtime = getRuntime(ctx);
-      const state = runtime.state;
-      if (state.results.length === 0) {
-        ctx.ui.notify("No experiments yet", "info");
-        return;
-      }
+  if (shortcuts.fullscreenDashboard) {
+    pi.registerShortcut(shortcuts.fullscreenDashboard, {
+      description: "Fullscreen autoresearch dashboard",
+      handler: async (ctx) => {
+        const runtime = getRuntime(ctx);
+        const state = runtime.state;
+        if (state.results.length === 0) {
+          ctx.ui.notify("No experiments yet", "info");
+          return;
+        }
 
-      await ctx.ui.custom<void>(
-        (tui, theme, _kb, done) => {
+        await ctx.ui.custom<void>(
+          (tui, theme, _kb, done) => {
           let scrollOffset = 0;
           let lastViewportRows = 8;
           let lastTotalRows = 0;
@@ -2676,18 +2695,19 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
               clearOverlay();
             },
           };
-        },
-        {
-          overlay: true,
-          overlayOptions: {
-            width: "95%",
-            maxHeight: "90%",
-            anchor: "center" as const,
           },
-        }
-      );
-    },
-  });
+          {
+            overlay: true,
+            overlayOptions: {
+              width: "95%",
+              maxHeight: "90%",
+              anchor: "center" as const,
+            },
+          }
+        );
+      },
+    });
+  }
 
   // -----------------------------------------------------------------------
   // Export: local live dashboard
