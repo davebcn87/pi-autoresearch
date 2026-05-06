@@ -30,8 +30,8 @@ import { createServer, type Server, type ServerResponse } from "node:http";
 
 import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
-import { randomBytes } from "node:crypto";
-import { tmpdir } from "node:os";
+import { createHash, randomBytes } from "node:crypto";
+import { homedir, tmpdir } from "node:os";
 
 import {
   runHook,
@@ -481,6 +481,57 @@ function validateWorkDir(ctxCwd: string): string | null {
     return `workingDir "${workDir}" (from autoresearch.config.json) does not exist.`;
   }
   return null;
+}
+
+interface ManualOffState {
+  manualOff: boolean;
+  cwd: string;
+  workDir: string;
+  updatedAt: number;
+}
+
+function manualOffStatePath(ctxCwd: string, workDir: string): string {
+  const key = createHash("sha256")
+    .update(JSON.stringify({ cwd: path.resolve(ctxCwd), workDir: path.resolve(workDir) }))
+    .digest("hex")
+    .slice(0, 32);
+  return path.join(homedir(), ".pi", "autoresearch", "state", `${key}.json`);
+}
+
+function isManuallyOff(ctxCwd: string, workDir: string): boolean {
+  try {
+    const statePath = manualOffStatePath(ctxCwd, workDir);
+    if (!fs.existsSync(statePath)) return false;
+    const state = JSON.parse(fs.readFileSync(statePath, "utf-8")) as Partial<ManualOffState>;
+    return state.manualOff === true;
+  } catch {
+    return false;
+  }
+}
+
+function setManualOff(ctxCwd: string, workDir: string): void {
+  try {
+    const statePath = manualOffStatePath(ctxCwd, workDir);
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    const state: ManualOffState = {
+      manualOff: true,
+      cwd: path.resolve(ctxCwd),
+      workDir: path.resolve(workDir),
+      updatedAt: Date.now(),
+    };
+    fs.writeFileSync(statePath, JSON.stringify(state, null, 2) + "\n");
+  } catch {
+    // Best effort only — the current runtime is still switched off.
+  }
+}
+
+function clearManualOff(ctxCwd: string, workDir: string): void {
+  try {
+    const statePath = manualOffStatePath(ctxCwd, workDir);
+    if (fs.existsSync(statePath)) fs.unlinkSync(statePath);
+  } catch {
+    // Best effort only — failure should not block explicit activation.
+  }
 }
 
 /** Baseline = first experiment in current segment */
@@ -1273,8 +1324,10 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     // Read max experiments from config file
     state.maxExperiments = readMaxExperiments(ctx.cwd);
 
-    // Auto-enter autoresearch mode only when a persisted experiment log exists
-    runtime.autoresearchMode = fs.existsSync(autoresearchJsonlPath(workDir));
+    // Auto-enter autoresearch mode only when a persisted experiment log exists,
+    // unless the user explicitly disabled it with `/autoresearch off`.
+    runtime.autoresearchMode = fs.existsSync(autoresearchJsonlPath(workDir)) &&
+      !isManuallyOff(ctx.cwd, workDir);
 
     updateWidget(ctx);
   };
@@ -1284,6 +1337,11 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
     const runtime = getRuntime(ctx);
     const state = runtime.state;
+
+    if (!runtime.autoresearchMode && !runtime.runningExperiment) {
+      ctx.ui.setWidget("autoresearch", undefined);
+      return;
+    }
 
     if (state.results.length === 0) {
       if (!runtime.runningExperiment) {
@@ -1614,6 +1672,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
       const wasInactive = !runtime.autoresearchMode;
       runtime.autoresearchMode = true;
+      clearManualOff(ctx.cwd, workDir);
       updateWidget(ctx);
 
       if (wasInactive) {
@@ -2958,6 +3017,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         runtime.lastRunDuration = null;
         runtime.runningExperiment = null;
         cancelPendingResume(runtime);
+        setManualOff(ctx.cwd, resolveWorkDir(ctx.cwd));
         stopDashboardServer();
         clearSessionUi(ctx);
         if (wasRunning) ctx.abort();
@@ -2983,6 +3043,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         runtime.runningExperiment = null;
         cancelPendingResume(runtime);
         runtime.state = createExperimentState();
+        clearManualOff(ctx.cwd, resolveWorkDir(ctx.cwd));
         stopDashboardServer();
         updateWidget(ctx);
 
@@ -3011,6 +3072,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       runtime.autoResumeTurns = 0;
 
       const workDir = resolveWorkDir(ctx.cwd);
+      clearManualOff(ctx.cwd, workDir);
       const rulesLoaded = hasAutoresearchRules(ctx);
       const kickoff = rulesLoaded
         ? `Autoresearch mode active. ${trimmedArgs} ${BENCHMARK_GUARDRAIL}`

@@ -45,7 +45,7 @@ pi install npm:pi-autoresearch
 | Subcommand | Description |
 |------------|-------------|
 | `/autoresearch <text>` | Enter autoresearch mode. If `autoresearch.md` exists, resumes the loop with `<text>` as context. Otherwise, sets up a new session. |
-| `/autoresearch off` | Leave autoresearch mode. Stops auto-resume and clears runtime state but keeps `autoresearch.jsonl` intact. |
+| `/autoresearch off` | Leave autoresearch mode. Stops auto-resume and clears runtime state but keeps `autoresearch.jsonl` intact. The manual-off choice is persisted outside the repo under `~/.pi/autoresearch/state/`, so `/tree`, compaction, and session reloads do not reactivate it. |
 | `/autoresearch clear` | Delete `autoresearch.jsonl`, reset all state, and turn autoresearch mode off. Use this for a clean start. |
 | `/autoresearch export` | Open a live dashboard in your browser. Auto-updates as experiments run. |
 
