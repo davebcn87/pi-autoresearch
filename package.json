@@ -1,6 +1,6 @@
 {
   "name": "pi-autoresearch",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "type": "module",
   "description": "Autonomous experiment loop for pi — run, measure, keep or discard. Inspired by karpathy/autoresearch.",
   "keywords": [

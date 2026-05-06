@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.0] - 2026-05-06
+
+### Added
+
+- Configurable dashboard keyboard shortcuts. Users can now override or disable the toggle and fullscreen shortcuts with a profile-aware `<agent-dir>/extensions/pi-autoresearch.json` config file, helping autoresearch coexist with other pi extensions that bind the same keys.
+- Shortcut resolution tests covering defaults, overrides, disabled shortcuts, partial configs, malformed configs, and extension registration.
+
+### Changed
+
+- Dashboard hints and README documentation now reflect the effective shortcuts from config.
+
 ## [1.3.0] - 2026-04-29
 
 ### Added
