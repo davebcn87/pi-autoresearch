@@ -66,6 +66,21 @@ pi install npm:pi-autoresearch
 | `Ctrl+Shift+T` | Toggle dashboard expand/collapse (inline widget ↔ full results table above the editor) |
 | `Ctrl+Shift+F` | Open fullscreen scrollable dashboard overlay. Navigate with `↑`/`↓`/`j`/`k`, `PageUp`/`PageDown`/`u`/`d`, `g`/`G` for top/bottom, `Escape` or `q` to close. |
 
+To avoid conflicts with other pi extensions, override or disable these shortcuts in
+`<agent-dir>/extensions/pi-autoresearch.json`. `<agent-dir>` is the active pi profile
+config directory (usually `~/.pi/agent`, or `PI_CODING_AGENT_DIR` when set):
+
+```json
+{
+  "shortcuts": {
+    "toggleDashboard": "ctrl+shift+y",
+    "fullscreenDashboard": null
+  }
+}
+```
+
+Use `null` to skip registering a shortcut. Omitted shortcuts keep their defaults.
+
 ### UI
 
 - **Status widget** — always visible above the editor: `🔬 autoresearch 12 runs 8 kept │ ★ total_µs: 15,200 (-12.3%) │ conf: 2.1×`
@@ -142,8 +157,8 @@ The agent reads `autoresearch.jsonl`, groups kept experiments into logical chang
 ### 4. Monitor progress
 
 - **Widget** — always visible above the editor
-- **`Ctrl+Shift+T`** — expand/collapse the full results table inline
-- **`Ctrl+Shift+F`** — fullscreen scrollable dashboard overlay
+- **`Ctrl+Shift+T`** — expand/collapse the full results table inline (config key: `shortcuts.toggleDashboard`)
+- **`Ctrl+Shift+F`** — fullscreen scrollable dashboard overlay (config key: `shortcuts.fullscreenDashboard`)
 - **`/autoresearch export`** — open a live browser dashboard with chart and share card
 - **`Escape`** — interrupt anytime and ask for a summary
 
