@@ -2768,17 +2768,20 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   const dashboardSseClients = new Set<ServerResponse>();
 
   function openInBrowser(url: string): void {
-    if (process.platform === "win32") {
-      spawn("cmd", ["/c", "start", "", url], {
-        detached: true,
-        shell: true,
-        stdio: "ignore",
-      }).unref();
-      return;
-    }
-
-    const openCmd = process.platform === "darwin" ? "open" : "xdg-open";
-    spawn(openCmd, [url], { detached: true, stdio: "ignore" }).unref();
+    const child = process.platform === "win32"
+      ? spawn("cmd", ["/c", "start", "", url], {
+          detached: true,
+          shell: true,
+          stdio: "ignore",
+        })
+      : spawn(process.platform === "darwin" ? "open" : "xdg-open", [url], {
+          detached: true,
+          stdio: "ignore",
+        });
+    // Swallow launcher errors (e.g. xdg-open missing); caller prints the URL
+    // so the user can open it manually.
+    child.on("error", () => { /* ignore */ });
+    child.unref();
   }
 
   function stopDashboardServer(): void {
