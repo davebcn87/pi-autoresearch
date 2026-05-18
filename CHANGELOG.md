@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+### Added
+
+- Optional `ask_autoresearch_hint` tool. When enabled in `autoresearch.config.json`, the loop can ask a configured larger pi model for bounded, side-effect-free strategy advice after stalled or failed experiment attempts.
+
 ## [1.4.0] - 2026-05-06
 
 ### Added

@@ -87,11 +87,28 @@ JSON config file that lives in the pi session's working directory (`ctx.cwd`). S
 
 - **`maxIterations`** (number) — maximum experiments before auto-stopping.
 - **`workingDir`** (string) — override the directory for all autoresearch operations: file I/O (`autoresearch.jsonl`, `autoresearch.md`, `autoresearch.sh`, `autoresearch.checks.sh`, `autoresearch.ideas.md`), command execution, and git operations. Supports absolute paths or relative paths (resolved against `ctx.cwd`). The config file itself always stays in `ctx.cwd`. Fails if the directory doesn't exist.
+- **`hints`** (object) — optional expensive-model hint tool config. Do not create this by default. Only add it when the user explicitly wants `ask_autoresearch_hint` to call a configured larger pi model for advisory strategy help.
 
 ```json
 {
   "workingDir": "/path/to/project",
   "maxIterations": 50
+}
+```
+
+When the user explicitly wants the hint tool, add:
+
+```json
+{
+  "hints": {
+    "enabled": true,
+    "provider": "anthropic",
+    "model": "claude-opus-4-5",
+    "thinkingLevel": "high",
+    "maxRecentRuns": 8,
+    "maxCallsPerSession": 5,
+    "timeoutSeconds": 120
+  }
 }
 ```
 
