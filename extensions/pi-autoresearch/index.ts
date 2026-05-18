@@ -51,6 +51,11 @@ import {
   buildAutoresearchCompactionSummary,
 } from "./compaction.ts";
 import { resolveAutoresearchShortcuts } from "./shortcuts.ts";
+import {
+  isHintConfigReady,
+  requestAutoresearchHint,
+  resolveHintConfig,
+} from "./hints.ts";
 
 // ---------------------------------------------------------------------------
 // Experiment output limits (sent to LLM — keep small to save context)
@@ -142,6 +147,8 @@ interface AutoresearchRuntime {
   autoresearchMode: boolean;
   dashboardExpanded: boolean;
   experimentsThisSession: number;
+  hintsThisSession: number;
+  hintInFlight: boolean;
   autoResumeTurns: number;
   lastRunChecks: { pass: boolean; output: string; duration: number } | null;
   lastRunDuration: number | null;
@@ -171,6 +178,20 @@ const RunParams = Type.Object({
     Type.Number({
       description:
         "Kill autoresearch.checks.sh after this many seconds (default: 300). Only relevant when the checks file exists.",
+    })
+  ),
+});
+
+const HintParams = Type.Object({
+  question: Type.String({
+    minLength: 1,
+    description:
+      "Focused question for the configured larger hint model. Ask for strategy help, not code execution.",
+  }),
+  extra_context: Type.Optional(
+    Type.String({
+      description:
+        "Optional short context from the current agent. Do not include secrets, raw logs, or large file dumps.",
     })
   ),
 });
@@ -431,6 +452,7 @@ function currentResults(results: ExperimentResult[], segment: number): Experimen
 interface AutoresearchConfig {
   maxIterations?: number;
   workingDir?: string;
+  hints?: unknown;
 }
 
 /** Read autoresearch.config.json from the given directory (always ctx.cwd) */
@@ -635,6 +657,8 @@ function createSessionRuntime(): AutoresearchRuntime {
     autoresearchMode: false,
     dashboardExpanded: false,
     experimentsThisSession: 0,
+    hintsThisSession: 0,
+    hintInFlight: false,
     autoResumeTurns: 0,
     lastRunChecks: null,
     lastRunDuration: null,
@@ -1208,6 +1232,8 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     runtime.lastRunDuration = null;
     runtime.runningExperiment = null;
     runtime.experimentsThisSession = 0;
+    runtime.hintsThisSession = 0;
+    runtime.hintInFlight = false;
     runtime.autoResumeTurns = 0;
     runtime.state = createExperimentState();
 
@@ -1529,9 +1555,199 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       extra += `\n\n💡 Ideas backlog exists at ${ideasPath} — check it for promising experiment paths. Prune stale entries.`;
     }
 
+    const hintConfig = resolveHintConfig(readConfig(ctx.cwd));
+    if (isHintConfigReady(hintConfig)) {
+      extra +=
+        "\n\n## Autoresearch Hints (ACTIVE)" +
+        `\nask_autoresearch_hint is configured for ${hintConfig.provider}/${hintConfig.model}.` +
+        "\nUse ask_autoresearch_hint only after repeated discards/crashes, stalled progress, or unclear next hypotheses." +
+        "\nAsk one focused question. Treat the response as advisory, then validate any suggestion with run_experiment and log_experiment.";
+    }
+
     return {
       systemPrompt: event.systemPrompt + extra,
     };
+  });
+
+  // -----------------------------------------------------------------------
+  // ask_autoresearch_hint tool — optional side-channel strategy advice
+  // -----------------------------------------------------------------------
+
+  pi.registerTool({
+    name: "ask_autoresearch_hint",
+    label: "Ask Hint",
+    description:
+      "Ask the configured larger model for concise autoresearch strategy advice. Side-effect free and disabled unless autoresearch.config.json enables hints.",
+    parameters: HintParams,
+
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      const runtime = getRuntime(ctx);
+      const question = params.question.trim();
+      if (!question) {
+        return {
+          content: [{ type: "text", text: "Hint unavailable: question must not be empty." }],
+          details: {},
+        };
+      }
+
+      const workDirError = validateWorkDir(ctx.cwd);
+      if (workDirError) {
+        return {
+          content: [{ type: "text", text: `Hint unavailable: ${workDirError}` }],
+          details: {},
+        };
+      }
+
+      const config = resolveHintConfig(readConfig(ctx.cwd));
+      if (!config.enabled) {
+        return {
+          content: [{
+            type: "text",
+            text: "Hint unavailable: hints are disabled. Set hints.enabled=true in autoresearch.config.json to allow expensive model calls.",
+          }],
+          details: { enabled: false },
+        };
+      }
+
+      if (!isHintConfigReady(config)) {
+        return {
+          content: [{
+            type: "text",
+            text: "Hint unavailable: hints.enabled is true, but hints.provider and hints.model must both be set in autoresearch.config.json.",
+          }],
+          details: { enabled: true, provider: config.provider, model: config.model },
+        };
+      }
+
+      if (runtime.hintInFlight) {
+        return {
+          content: [{ type: "text", text: "Hint unavailable: another hint request is already in flight." }],
+          details: { inFlight: true },
+        };
+      }
+
+      if (runtime.hintsThisSession >= config.maxCallsPerSession) {
+        return {
+          content: [{
+            type: "text",
+            text: `Hint unavailable: maxCallsPerSession reached (${config.maxCallsPerSession}). Continue with local experiments or raise the limit deliberately.`,
+          }],
+          details: {
+            hintsThisSession: runtime.hintsThisSession,
+            maxCallsPerSession: config.maxCallsPerSession,
+          },
+        };
+      }
+
+      const modelRegistry = ctx.modelRegistry;
+      if (!modelRegistry?.find || !modelRegistry?.getApiKeyAndHeaders) {
+        return {
+          content: [{
+            type: "text",
+            text: "Hint unavailable: this pi version does not expose modelRegistry.find/getApiKeyAndHeaders to extensions.",
+          }],
+          details: {},
+        };
+      }
+
+      const model = modelRegistry.find(config.provider, config.model);
+      if (!model) {
+        return {
+          content: [{
+            type: "text",
+            text: `Hint unavailable: model ${config.provider}/${config.model} was not found in pi's model registry.`,
+          }],
+          details: { provider: config.provider, model: config.model },
+        };
+      }
+
+      const workDir = resolveWorkDir(ctx.cwd);
+      runtime.hintInFlight = true;
+
+      try {
+        const auth = await modelRegistry.getApiKeyAndHeaders(model);
+        if (!auth.ok) {
+          return {
+            content: [{
+              type: "text",
+              text: `Hint unavailable: no usable auth for ${config.provider}/${config.model}: ${auth.error}`,
+            }],
+            details: { provider: config.provider, model: config.model },
+          };
+        }
+
+        runtime.hintsThisSession++;
+        const hint = await requestAutoresearchHint({
+          state: runtime.state,
+          workDir,
+          question,
+          extraContext: params.extra_context,
+          maxRecentRuns: config.maxRecentRuns,
+          model,
+          apiKey: auth.apiKey,
+          headers: auth.headers,
+          thinkingLevel: config.thinkingLevel,
+          timeoutSeconds: config.timeoutSeconds,
+          signal,
+        });
+
+        const callsRemaining = Math.max(0, config.maxCallsPerSession - runtime.hintsThisSession);
+        return {
+          content: [{
+            type: "text",
+            text:
+              `Hint from ${config.provider}/${config.model}:\n\n${hint.text}` +
+              "\n\nValidate any suggestion with run_experiment and log_experiment before keeping changes.",
+          }],
+          details: {
+            provider: config.provider,
+            model: config.model,
+            durationMs: hint.durationMs,
+            promptBytes: hint.promptBytes,
+            stopReason: hint.stopReason,
+            usage: hint.usage,
+            hintsThisSession: runtime.hintsThisSession,
+            callsRemaining,
+          },
+        };
+      } catch (error) {
+        return {
+          content: [{
+            type: "text",
+            text: `Hint unavailable: ${error instanceof Error ? error.message : String(error)}`,
+          }],
+          details: {
+            provider: config.provider,
+            model: config.model,
+            hintsThisSession: runtime.hintsThisSession,
+          },
+        };
+      } finally {
+        runtime.hintInFlight = false;
+      }
+    },
+
+    renderCall(args, theme) {
+      let text = theme.fg("toolTitle", theme.bold("ask_autoresearch_hint "));
+      text += theme.fg("muted", args.question ?? "");
+      return new Text(text, 0, 0);
+    },
+
+    renderResult(result, _options, theme) {
+      const output = result.content[0]?.type === "text" ? result.content[0].text : "";
+      const details = result.details as { provider?: string; model?: string; durationMs?: number } | undefined;
+      if (details?.provider && details?.model && details?.durationMs !== undefined) {
+        return new Text(
+          theme.fg("accent", `hint ${details.provider}/${details.model} `) +
+            theme.fg("dim", `${(details.durationMs / 1000).toFixed(1)}s`) +
+            "\n" +
+            output,
+          0,
+          0,
+        );
+      }
+      return new Text(output, 0, 0);
+    },
   });
 
   // -----------------------------------------------------------------------
@@ -2954,6 +3170,8 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         runtime.dashboardExpanded = false;
         runtime.autoResumeTurns = 0;
         runtime.experimentsThisSession = 0;
+        runtime.hintsThisSession = 0;
+        runtime.hintInFlight = false;
         runtime.lastRunChecks = null;
         runtime.lastRunDuration = null;
         runtime.runningExperiment = null;
@@ -2979,6 +3197,8 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         runtime.dashboardExpanded = false;
         runtime.autoResumeTurns = 0;
         runtime.experimentsThisSession = 0;
+        runtime.hintsThisSession = 0;
+        runtime.hintInFlight = false;
         runtime.lastRunChecks = null;
         runtime.runningExperiment = null;
         cancelPendingResume(runtime);
