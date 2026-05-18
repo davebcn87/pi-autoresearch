@@ -8,6 +8,7 @@ All notable changes to this project will be documented in this file.
 
 - `maxAutoResumeTurns` in `.auto/config.json` to tune the auto-resume safety valve. The default remains 20; `null` or `0` means intentional unlimited auto-resume.
 - `/autoresearch` can infer loop controls from natural language, e.g. “for 50 runs” or “continue indefinitely”, and writes the matching config automatically.
+- Optional `ask_autoresearch_hint` tool. When enabled in `.auto/config.json`, the loop can ask a configured larger pi model for bounded, side-effect-free strategy advice after stalled or failed experiment attempts.
 
 ## [1.6.0] - 2026-06-08
 
@@ -21,7 +22,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
-- The `init_experiment`, `run_experiment`, and `log_experiment` tools are now revealed to the agent only while autoresearch mode is active, instead of being callable in every session. Outside autoresearch mode the tools are absent from the LLM's schema and system prompt, so the agent can no longer self-start a research loop — entry is via `/autoresearch` or resuming a session with an existing `autoresearch.jsonl`.
+- The `init_experiment`, `run_experiment`, and `log_experiment` tools are now revealed to the agent only while autoresearch mode is active, instead of being callable in every session. Outside autoresearch mode the tools are absent from the LLM's schema and system prompt, so the agent can no longer self-start a research loop — entry is via `/autoresearch` or resuming a session with an existing `.auto/log.jsonl`.
 
 ## [1.4.0] - 2026-05-06
 

@@ -104,6 +104,7 @@ JSON config file that lives in `.auto/` under the pi session's working directory
 - **`maxIterations`** (number) — maximum experiments before auto-stopping.
 - **`maxAutoResumeTurns`** (number or null) — maximum automatic resume prompts before the safety valve stops the loop. Defaults to 20. Set to `null` or `0` for intentional unlimited auto-resume.
 - **`workingDir`** (string) — override the directory for all autoresearch operations: file I/O (`.auto/log.jsonl`, `.auto/prompt.md`, `.auto/measure.sh`, `.auto/checks.sh`, `.auto/ideas.md`), command execution, and git operations. Supports absolute paths or relative paths (resolved against `ctx.cwd`). The config file itself always stays under `ctx.cwd`. Fails if the directory doesn't exist.
+- **`hints`** (object) — optional expensive-model hint tool config. Do not create this by default. Only add it when the user explicitly wants `ask_autoresearch_hint` to call a configured larger pi model for advisory strategy help.
 
 ```json
 {
@@ -114,6 +115,22 @@ JSON config file that lives in `.auto/` under the pi session's working directory
 ```
 
 The `/autoresearch` command also understands common natural-language loop controls and writes this config automatically. Phrases like “for 50 runs” set `maxIterations` and the auto-resume budget; phrases like “run forever”, “continue indefinitely”, or “never stop” set unlimited auto-resume and remove the experiment cap.
+
+When the user explicitly wants the hint tool, add:
+
+```json
+{
+  "hints": {
+    "enabled": true,
+    "provider": "anthropic",
+    "model": "claude-opus-4-5",
+    "thinkingLevel": "high",
+    "maxRecentRuns": 8,
+    "maxCallsPerSession": 5,
+    "timeoutSeconds": 120
+  }
+}
+```
 
 ### `.auto/checks.sh` (optional)
 
