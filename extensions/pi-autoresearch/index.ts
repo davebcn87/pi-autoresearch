@@ -1007,6 +1007,23 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   const getRuntime = (ctx: ExtensionContext): AutoresearchRuntime =>
     runtimeStore.ensure(getSessionKey(ctx));
 
+  // Registering through this gates the tool, so a new one can't slip in ungated.
+  const gatedToolNames = new Set<string>();
+  const registerGatedTool = (tool: Parameters<typeof pi.registerTool>[0]): void => {
+    gatedToolNames.add(tool.name);
+    pi.registerTool(tool);
+  };
+
+  // The one place mode flips: gated tools follow the flag, never drifting from it.
+  const setAutoresearchMode = (ctx: ExtensionContext, enabled: boolean): void => {
+    getRuntime(ctx).autoresearchMode = enabled;
+    const activeTools = new Set(pi.getActiveTools()); // setActiveTools replaces the whole set
+    for (const tool of gatedToolNames) {
+      enabled ? activeTools.add(tool) : activeTools.delete(tool);
+    }
+    pi.setActiveTools([...activeTools]);
+  };
+
   const isAgentSettled = (ctx: ExtensionContext): boolean =>
     ctx.isIdle() && !ctx.hasPendingMessages();
 
@@ -1274,7 +1291,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     state.maxExperiments = readMaxExperiments(ctx.cwd);
 
     // Auto-enter autoresearch mode only when a persisted experiment log exists
-    runtime.autoresearchMode = fs.existsSync(autoresearchJsonlPath(workDir));
+    setAutoresearchMode(ctx, fs.existsSync(autoresearchJsonlPath(workDir)));
 
     updateWidget(ctx);
   };
@@ -1538,7 +1555,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   // init_experiment tool — one-time setup
   // -----------------------------------------------------------------------
 
-  pi.registerTool({
+  registerGatedTool({
     name: "init_experiment",
     label: "Init Experiment",
     description:
@@ -1613,7 +1630,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       }
 
       const wasInactive = !runtime.autoresearchMode;
-      runtime.autoresearchMode = true;
+      setAutoresearchMode(ctx, true);
       updateWidget(ctx);
 
       if (wasInactive) {
@@ -1655,7 +1672,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   // run_experiment tool
   // -----------------------------------------------------------------------
 
-  pi.registerTool({
+  registerGatedTool({
     name: "run_experiment",
     label: "Run Experiment",
     description:
@@ -2170,7 +2187,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   // log_experiment tool
   // -----------------------------------------------------------------------
 
-  pi.registerTool({
+  registerGatedTool({
     name: "log_experiment",
     label: "Log Experiment",
     description:
@@ -2436,7 +2453,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       const limitReached = state.maxExperiments !== null && segmentCount >= state.maxExperiments;
       if (limitReached) {
         text += `\n\n🛑 Maximum experiments reached (${state.maxExperiments}). STOP the experiment loop now.`;
-        runtime.autoresearchMode = false;
+        setAutoresearchMode(ctx, false);
         ctx.abort();
       } else if (runtime.autoresearchMode) {
         const beforeSteer = await fireHook({
@@ -2950,7 +2967,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       if (command === "off") {
         const wasRunning = !ctx.isIdle();
 
-        runtime.autoresearchMode = false;
+        setAutoresearchMode(ctx, false);
         runtime.dashboardExpanded = false;
         runtime.autoResumeTurns = 0;
         runtime.experimentsThisSession = 0;
@@ -2975,7 +2992,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
       if (command === "clear") {
         const jsonlPath = autoresearchJsonlPath(resolveWorkDir(ctx.cwd));
-        runtime.autoresearchMode = false;
+        setAutoresearchMode(ctx, false);
         runtime.dashboardExpanded = false;
         runtime.autoResumeTurns = 0;
         runtime.experimentsThisSession = 0;
@@ -3007,7 +3024,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         return;
       }
 
-      runtime.autoresearchMode = true;
+      setAutoresearchMode(ctx, true);
       runtime.autoResumeTurns = 0;
 
       const workDir = resolveWorkDir(ctx.cwd);
