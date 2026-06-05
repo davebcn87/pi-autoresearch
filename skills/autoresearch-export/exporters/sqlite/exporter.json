@@ -1,0 +1,5 @@
+{
+  "name": "sqlite",
+  "description": "Append curated wins to the local SQLite knowledge store",
+  "run": "export.sh"
+}
