@@ -54,6 +54,8 @@ pi install npm:pi-autoresearch
 ```
 /autoresearch optimize unit test runtime, monitor correctness
 /autoresearch model training, run 5 minutes of train.py and note the loss ratio as optimization target
+/autoresearch optimize bundle size for 50 runs
+/autoresearch continue indefinitely and never stop
 /autoresearch export
 /autoresearch off
 /autoresearch clear
@@ -208,7 +210,8 @@ Create `.auto/config.json` in your pi session directory to customize behavior:
 ```json
 {
   "workingDir": "/path/to/project",
-  "maxIterations": 50
+  "maxIterations": 50,
+  "maxAutoResumeTurns": 50
 }
 ```
 
@@ -216,10 +219,11 @@ Create `.auto/config.json` in your pi session directory to customize behavior:
 |-------|------|-------------|
 | `workingDir` | string | Override the directory for all autoresearch operations — file I/O, command execution, and git. Supports absolute or relative paths (resolved against the pi session cwd). The config file itself always stays under the session cwd. Fails if the directory doesn't exist. |
 | `maxIterations` | number | Maximum experiments before auto-stopping. The agent is told to stop and won't run more experiments until a new segment is initialized. |
+| `maxAutoResumeTurns` | number \| null | Safety valve for automatic resume prompts after completed turns or compactions. Defaults to `20` to prevent accidental chat-only loops. Set to `null` or `0` for unlimited auto-resume. |
 
 ### Long-running loops and context
 
-The loop is designed to run unattended across context limits. When pi's [auto-compaction](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/compaction.md) summarizes the older portion of the conversation, autoresearch detects the resulting idle and re-prompts the agent to re-read `.auto/prompt.md`, the tail of `.auto/log.jsonl`, `.auto/ideas.md`, and `git log` before continuing. All progress is persisted in those files, so the post-summary turn rehydrates from the source of truth instead of relying on whatever survived compaction. No tuning required — if pi's auto-compaction is enabled (the default), this just works.
+The loop is designed to run unattended across context limits. When pi's [auto-compaction](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/compaction.md) summarizes the older portion of the conversation, autoresearch detects the resulting idle and re-prompts the agent to re-read `.auto/prompt.md`, the tail of `.auto/log.jsonl`, `.auto/ideas.md`, and `git log` before continuing. All progress is persisted in those files, so the post-summary turn rehydrates from the source of truth instead of relying on whatever survived compaction. No tuning required — if pi's auto-compaction is enabled (the default), this just works. For intentionally very long unattended sessions, raise or disable `maxAutoResumeTurns` so the safety valve does not stop the loop before your chosen run count.
 
 ---
 
@@ -337,6 +341,14 @@ Autoresearch loops run autonomously and can burn through tokens. Two ways to cap
      "maxIterations": 30
    }
    ```
+- **`maxAutoResumeTurns`** — cap or remove the auto-resume safety valve. The default is `20`; set `null` or `0` only when you intentionally want unattended runs to continue indefinitely:
+   ```json
+   {
+     "maxAutoResumeTurns": null
+   }
+   ```
+
+You can also set these verbally in `/autoresearch`: phrases like “run forever”, “continue indefinitely”, or “never stop” configure unlimited auto-resume; phrases like “for 50 runs” configure both `maxIterations` and enough auto-resume budget for that run count.
 
 ## License
 
