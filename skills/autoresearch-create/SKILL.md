@@ -86,14 +86,18 @@ Use `log_experiment`'s `asi` parameter to annotate each run with **whatever woul
 JSON config file that lives in the pi session's working directory (`ctx.cwd`). Supported fields:
 
 - **`maxIterations`** (number) — maximum experiments before auto-stopping.
+- **`maxAutoResumeTurns`** (number or null) — maximum automatic resume prompts before the safety valve stops the loop. Defaults to 20. Set to `null` or `0` for intentional unlimited auto-resume.
 - **`workingDir`** (string) — override the directory for all autoresearch operations: file I/O (`autoresearch.jsonl`, `autoresearch.md`, `autoresearch.sh`, `autoresearch.checks.sh`, `autoresearch.ideas.md`), command execution, and git operations. Supports absolute paths or relative paths (resolved against `ctx.cwd`). The config file itself always stays in `ctx.cwd`. Fails if the directory doesn't exist.
 
 ```json
 {
   "workingDir": "/path/to/project",
-  "maxIterations": 50
+  "maxIterations": 50,
+  "maxAutoResumeTurns": 50
 }
 ```
+
+The `/autoresearch` command also understands common natural-language loop controls and writes this config automatically. Phrases like “for 50 runs” set `maxIterations` and the auto-resume budget; phrases like “run forever”, “continue indefinitely”, or “never stop” set unlimited auto-resume and remove the experiment cap.
 
 ### `autoresearch.checks.sh` (optional)
 

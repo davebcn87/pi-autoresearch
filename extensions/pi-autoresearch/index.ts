@@ -59,6 +59,12 @@ const EXPERIMENT_MAX_LINES = 10;
 const EXPERIMENT_MAX_BYTES = 4 * 1024; // 4KB
 
 // ---------------------------------------------------------------------------
+// Defaults
+// ---------------------------------------------------------------------------
+
+export const DEFAULT_MAX_AUTORESUME_TURNS = 20;
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
@@ -428,13 +434,20 @@ function currentResults(results: ExperimentResult[], segment: number): Experimen
   return results.filter((r) => r.segment === segment);
 }
 
-interface AutoresearchConfig {
-  maxIterations?: number;
+export interface AutoresearchConfig {
+  maxIterations?: number | null;
+  maxAutoResumeTurns?: number | null;
   workingDir?: string;
 }
 
+export interface InferredAutoresearchConfig {
+  maxIterations?: number;
+  clearMaxIterations?: boolean;
+  maxAutoResumeTurns?: number | null;
+}
+
 /** Read autoresearch.config.json from the given directory (always ctx.cwd) */
-function readConfig(cwd: string): AutoresearchConfig {
+export function readConfig(cwd: string): AutoresearchConfig {
   try {
     const configPath = autoresearchConfigPath(cwd);
     if (!fs.existsSync(configPath)) return {};
@@ -445,11 +458,96 @@ function readConfig(cwd: string): AutoresearchConfig {
 }
 
 /** Read maxExperiments from autoresearch.config.json (if it exists) */
-function readMaxExperiments(cwd: string): number | null {
+export function readMaxExperiments(cwd: string): number | null {
   const config = readConfig(cwd);
   return (typeof config.maxIterations === "number" && config.maxIterations > 0)
     ? Math.floor(config.maxIterations)
     : null;
+}
+
+/**
+ * Read the auto-resume safety valve from autoresearch.config.json.
+ * Undefined preserves the conservative default. null or 0 means unlimited.
+ */
+export function readMaxAutoResumeTurns(cwd: string): number | null {
+  const config = readConfig(cwd);
+  if (config.maxAutoResumeTurns === null || config.maxAutoResumeTurns === 0) return null;
+  return (typeof config.maxAutoResumeTurns === "number" && config.maxAutoResumeTurns > 0)
+    ? Math.floor(config.maxAutoResumeTurns)
+    : DEFAULT_MAX_AUTORESUME_TURNS;
+}
+
+function parsePositiveInteger(value: string): number | null {
+  const parsed = Number.parseInt(value.replace(/[,_]/g, ""), 10);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+/** Infer loop controls from natural-language `/autoresearch ...` arguments. */
+export function inferAutoresearchConfigFromPrompt(prompt: string): InferredAutoresearchConfig | null {
+  const text = prompt
+    .toLowerCase()
+    .replace(/[\u2010-\u2015]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text) return null;
+
+  const inferred: InferredAutoresearchConfig = {};
+
+  const autoResumeMatch = text.match(
+    /\b(?:for|after|limit(?:ed)?(?: to)?|stop after|only)?\s*(\d[\d,_]*)\s*(?:auto[- ]?resumes?|auto[- ]?resume turns?|resume turns?)\b/,
+  );
+  if (autoResumeMatch) {
+    const count = parsePositiveInteger(autoResumeMatch[1]);
+    if (count !== null) inferred.maxAutoResumeTurns = count;
+  }
+
+  const runMatch = text.match(
+    /\b(?:for|after|limit(?:ed)?(?: to)?|stop after|only)\s+(\d[\d,_]*)\s+(?:runs?|iterations?|experiments?)\b/,
+  );
+  if (runMatch) {
+    const count = parsePositiveInteger(runMatch[1]);
+    if (count !== null) {
+      inferred.maxIterations = count;
+      if (inferred.maxAutoResumeTurns === undefined) inferred.maxAutoResumeTurns = count;
+    }
+  }
+
+  const wantsUnlimited =
+    /\b(?:run|continue|resume|loop)\s+(?:indefinitely|infinite(?:ly)?|forever|without stopping)\b/.test(text) ||
+    /\b(?:indefinitely|forever)\s+(?:run|continue|resume|loop)\b/.test(text) ||
+    /\bunlimited\s+auto[- ]?resume\b/.test(text) ||
+    /\b(?:no|without)\s+(?:auto[- ]?resume\s+)?limits?\b/.test(text) ||
+    /\bnever\s+stopp?ing?\b/.test(text) ||
+    /\bdon'?t\s+stop\b/.test(text);
+
+  if (wantsUnlimited) {
+    inferred.maxAutoResumeTurns = null;
+    if (inferred.maxIterations === undefined) inferred.clearMaxIterations = true;
+  }
+
+  return Object.keys(inferred).length > 0 ? inferred : null;
+}
+
+export function applyInferredAutoresearchConfig(cwd: string, inferred: InferredAutoresearchConfig): string[] {
+  const configPath = autoresearchConfigPath(cwd);
+  const config = readConfig(cwd);
+  const notes: string[] = [];
+
+  if (inferred.clearMaxIterations) {
+    delete config.maxIterations;
+    notes.push("maxIterations=unlimited");
+  }
+  if (inferred.maxIterations !== undefined) {
+    config.maxIterations = inferred.maxIterations;
+    notes.push(`maxIterations=${inferred.maxIterations}`);
+  }
+  if (inferred.maxAutoResumeTurns !== undefined) {
+    config.maxAutoResumeTurns = inferred.maxAutoResumeTurns;
+    notes.push(`maxAutoResumeTurns=${inferred.maxAutoResumeTurns === null ? "unlimited" : inferred.maxAutoResumeTurns}`);
+  }
+
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
+  return notes;
 }
 
 /**
@@ -974,7 +1072,6 @@ function renderDashboardLines(
 // ---------------------------------------------------------------------------
 
 export default function autoresearchExtension(pi: ExtensionAPI) {
-  const MAX_AUTORESUME_TURNS = 20;
   const BENCHMARK_GUARDRAIL =
     "Be careful not to overfit to the benchmarks and do not cheat on the benchmarks.";
 
@@ -1054,7 +1151,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       return;
     }
     if (!isAgentSettled(ctx)) return;
-    if (hasReachedAutoResumeLimit(runtime)) {
+    if (hasReachedAutoResumeLimit(ctx, runtime)) {
       cancelPendingResume(runtime);
       notifyAutoResumeLimitReached(ctx);
       return;
@@ -1090,12 +1187,15 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   const shouldAutoResumeAfterCompact = (runtime: AutoresearchRuntime): boolean =>
     runtime.autoresearchMode;
 
-  const hasReachedAutoResumeLimit = (runtime: AutoresearchRuntime): boolean =>
-    runtime.autoResumeTurns >= MAX_AUTORESUME_TURNS;
+  const hasReachedAutoResumeLimit = (ctx: ExtensionContext, runtime: AutoresearchRuntime): boolean => {
+    const limit = readMaxAutoResumeTurns(ctx.cwd);
+    return limit !== null && runtime.autoResumeTurns >= limit;
+  };
 
   const notifyAutoResumeLimitReached = (ctx: ExtensionContext): void => {
+    const limit = readMaxAutoResumeTurns(ctx.cwd);
     ctx.ui.notify(
-      `Autoresearch auto-resume limit reached (${MAX_AUTORESUME_TURNS} turns)`,
+      `Autoresearch auto-resume limit reached (${limit ?? "unlimited"} turns)`,
       "info",
     );
   };
@@ -1211,6 +1311,8 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       "Examples:",
       "  /autoresearch optimize unit test runtime, monitor correctness",
       "  /autoresearch model training, run 5 minutes of train.py and note the loss ratio as optimization target",
+      "  /autoresearch optimize bundle size for 50 runs",
+      "  /autoresearch continue indefinitely and never stop",
       "  /autoresearch export",
     ].join("\n");
 
@@ -1486,7 +1588,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       return;
     }
     if (!gate(runtime)) return;
-    if (hasReachedAutoResumeLimit(runtime)) {
+    if (hasReachedAutoResumeLimit(ctx, runtime)) {
       notifyAutoResumeLimitReached(ctx);
       return;
     }
@@ -3019,8 +3121,19 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         return;
       }
 
+      const inferredConfig = inferAutoresearchConfigFromPrompt(trimmedArgs);
+      let configNote = "";
+      if (inferredConfig) {
+        const notes = applyInferredAutoresearchConfig(ctx.cwd, inferredConfig);
+        runtime.state.maxExperiments = readMaxExperiments(ctx.cwd);
+        runtime.autoResumeTurns = 0;
+        configNote = notes.length > 0 ? ` Config: ${notes.join(", ")}.` : "";
+      }
+
       if (runtime.autoresearchMode) {
-        ctx.ui.notify("Autoresearch already active — use '/autoresearch off' to stop first", "info");
+        const resume = `Autoresearch mode already active.${configNote} ${trimmedArgs} ${BENCHMARK_GUARDRAIL}`;
+        ctx.ui.notify(`Autoresearch mode already active.${configNote}`, "info");
+        sendWhenReady(ctx, resume);
         return;
       }
 
@@ -3030,13 +3143,13 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       const workDir = resolveWorkDir(ctx.cwd);
       const rulesLoaded = hasAutoresearchRules(ctx);
       const kickoff = rulesLoaded
-        ? `Autoresearch mode active. ${trimmedArgs} ${BENCHMARK_GUARDRAIL}`
-        : `Start autoresearch: ${trimmedArgs} ${BENCHMARK_GUARDRAIL}`;
+        ? `Autoresearch mode active.${configNote} ${trimmedArgs} ${BENCHMARK_GUARDRAIL}`
+        : `Start autoresearch:${configNote} ${trimmedArgs} ${BENCHMARK_GUARDRAIL}`;
 
       ctx.ui.notify(
         rulesLoaded
-          ? "Autoresearch mode ON — rules loaded from autoresearch.md"
-          : "Autoresearch mode ON — no autoresearch.md found, setting up",
+          ? `Autoresearch mode ON — rules loaded from autoresearch.md${configNote}`
+          : `Autoresearch mode ON — no autoresearch.md found, setting up${configNote}`,
         "info",
       );
 

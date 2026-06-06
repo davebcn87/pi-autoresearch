@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+### Added
+
+- `maxAutoResumeTurns` in `autoresearch.config.json` to tune the auto-resume safety valve. The default remains 20; `null` or `0` means intentional unlimited auto-resume.
+- `/autoresearch` can infer loop controls from natural language, e.g. “for 50 runs” or “continue indefinitely”, and writes the matching config automatically.
+
 ## [1.5.0] - 2026-06-04
 
 ### Changed
