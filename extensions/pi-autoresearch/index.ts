@@ -8,7 +8,7 @@
  * - `run_experiment` tool — runs any command, times it, captures output, detects pass/fail
  * - `log_experiment` tool — records results with session-persisted state
  * - Status widget showing experiment count + best metric
- * - Configurable shortcuts to expand/collapse and fullscreen the dashboard
+ * - Configurable shortcut to open the fullscreen dashboard overlay
  * - Adds autoresearch guidance to the system prompt and points the agent at autoresearch.md
  * - Injects autoresearch.md into context on every turn via before_agent_start
  */
@@ -140,7 +140,6 @@ interface LogDetails {
 
 interface AutoresearchRuntime {
   autoresearchMode: boolean;
-  dashboardExpanded: boolean;
   experimentsThisSession: number;
   autoResumeTurns: number;
   lastRunChecks: { pass: boolean; output: string; duration: number } | null;
@@ -633,7 +632,6 @@ function createExperimentState(): ExperimentState {
 function createSessionRuntime(): AutoresearchRuntime {
   return {
     autoresearchMode: false,
-    dashboardExpanded: false,
     experimentsThisSession: 0,
     autoResumeTurns: 0,
     lastRunChecks: null,
@@ -983,23 +981,12 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   const SETTLED_WINDOW_MS = 800;
   const shortcuts = resolveAutoresearchShortcuts();
 
-  const dashboardHintVariants = (toggleAction: "expand" | "collapse"): string[] => {
-    const toggle = shortcuts.toggleDashboard
-      ? `${shortcuts.toggleDashboard} ${toggleAction}`
-      : null;
-    const fullscreen = shortcuts.fullscreenDashboard
-      ? `${shortcuts.fullscreenDashboard} fullscreen`
-      : null;
-
-    if (toggle && fullscreen) {
-      return [
-        `${toggle} • ${fullscreen}`,
-        `${toggle} • full: ${shortcuts.fullscreenDashboard}`,
-        `${shortcuts.toggleDashboard} • ${shortcuts.fullscreenDashboard}`,
-      ];
-    }
-
-    return [toggle, fullscreen].filter((hint): hint is string => hint !== null);
+  const dashboardHintVariants = (): string[] => {
+    if (!shortcuts.fullscreenDashboard) return [];
+    return [
+      `${shortcuts.fullscreenDashboard} fullscreen`,
+      shortcuts.fullscreenDashboard,
+    ];
   };
 
   const runtimeStore = createRuntimeStore();
@@ -1328,9 +1315,8 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       return;
     }
 
-    if (runtime.dashboardExpanded) {
-      // Expanded: full dashboard table rendered as widget
-      ctx.ui.setWidget("autoresearch", (tui, theme) => ({
+    // Full dashboard table rendered as widget
+    ctx.ui.setWidget("autoresearch", (tui, theme) => ({
         render(width: number): string[] {
           const safeWidth = Math.max(1, width || getTuiSize(tui).width);
           const title = truncateDisplayText(
@@ -1354,107 +1340,12 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
               safeWidth,
               theme,
               rows,
-              dashboardHintVariants("collapse")
+              dashboardHintVariants()
             ),
           ];
         },
         invalidate(): void {},
       }));
-    } else {
-      // Collapsed: compact one-liner — compute everything inside render
-      ctx.ui.setWidget("autoresearch", (tui, theme) => ({
-        render(width: number): string[] {
-          const safeWidth = Math.max(1, width || getTuiSize(tui).width);
-          const cur = currentResults(state.results, state.currentSegment);
-          const kept = cur.filter((r) => r.status === "keep").length;
-          const crashed = cur.filter((r) => r.status === "crash").length;
-          const checksFailed = cur.filter((r) => r.status === "checks_failed").length;
-          const baseline = state.bestMetric;
-          const baselineSec = findBaselineSecondary(
-            state.results,
-            state.currentSegment,
-            state.secondaryMetrics
-          );
-
-          let bestPrimary: number | null = null;
-          let bestSec: Record<string, number> = {};
-          let bestRunNum = 0;
-          for (let i = state.results.length - 1; i >= 0; i--) {
-            const r = state.results[i];
-            if (r.segment !== state.currentSegment) continue;
-            if (r.status === "keep" && r.metric > 0) {
-              if (bestPrimary === null || isBetter(r.metric, bestPrimary, state.bestDirection)) {
-                bestPrimary = r.metric;
-                bestSec = r.metrics ?? {};
-                bestRunNum = i + 1;
-              }
-            }
-          }
-
-          const displayVal = bestPrimary ?? baseline;
-          const essential = [
-            theme.fg("accent", "🔬"),
-            theme.fg("muted", ` ${state.results.length} runs`),
-            theme.fg("success", ` ${kept} kept`),
-            theme.fg("dim", " │ "),
-            theme.fg(
-              "warning",
-              theme.bold(`★ ${state.metricName}: ${formatNum(displayVal, state.metricUnit)}`)
-            ),
-            bestRunNum > 0 ? theme.fg("dim", ` #${bestRunNum}`) : "",
-          ];
-
-          const optional: string[] = [];
-          if (crashed > 0) optional.push(theme.fg("error", ` ${crashed}💥`));
-          if (checksFailed > 0) optional.push(theme.fg("error", ` ${checksFailed}⚠`));
-
-          if (baseline !== null && bestPrimary !== null && baseline !== 0 && bestPrimary !== baseline) {
-            const pct = ((bestPrimary - baseline) / baseline) * 100;
-            const sign = pct > 0 ? "+" : "";
-            const deltaColor = isBetter(bestPrimary, baseline, state.bestDirection)
-              ? "success"
-              : "error";
-            optional.push(theme.fg(deltaColor, ` (${sign}${pct.toFixed(1)}%)`));
-          }
-
-          if (state.confidence !== null) {
-            const confStr = state.confidence.toFixed(1);
-            const confColor: Parameters<typeof theme.fg>[0] = state.confidence >= 2.0 ? "success" : state.confidence >= 1.0 ? "warning" : "error";
-            optional.push(theme.fg("dim", " │ "));
-            optional.push(theme.fg(confColor, `conf: ${confStr}×`));
-          }
-
-          if (state.secondaryMetrics.length > 0) {
-            for (const sm of state.secondaryMetrics) {
-              const val = bestSec[sm.name];
-              const bv = baselineSec[sm.name];
-              if (val === undefined) continue;
-              let secText = `${sm.name}: ${formatNum(val, sm.unit)}`;
-              if (bv !== undefined && bv !== 0 && val !== bv) {
-                const p = ((val - bv) / bv) * 100;
-                const s = p > 0 ? "+" : "";
-                const c = val <= bv ? "success" : "error";
-                secText += theme.fg(c, ` ${s}${p.toFixed(1)}%`);
-              }
-              optional.push(theme.fg("dim", "  "));
-              optional.push(theme.fg("muted", secText));
-              break;
-            }
-          }
-
-          if (state.name) optional.push(theme.fg("dim", ` │ ${state.name}`));
-
-          const left = [...essential, ...optional].join("");
-          const hintVariants = dashboardHintVariants("expand");
-          return [
-            hintVariants.length > 0
-              ? appendRightAlignedAdaptiveHint(left, safeWidth, theme, hintVariants)
-              : truncateToWidth(left, safeWidth, "…", true),
-          ];
-        },
-        invalidate(): void {},
-      }));
-    }
   };
 
   pi.on("session_start", async (_e, ctx) => reconstructState(ctx));
@@ -2558,30 +2449,6 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   });
 
   // -----------------------------------------------------------------------
-  // Toggle dashboard expand/collapse shortcut
-  // -----------------------------------------------------------------------
-
-  if (shortcuts.toggleDashboard) {
-    pi.registerShortcut(shortcuts.toggleDashboard, {
-      description: "Toggle autoresearch dashboard",
-      handler: async (ctx) => {
-        const runtime = getRuntime(ctx);
-        const state = runtime.state;
-        if (state.results.length === 0) {
-          if (!runtime.autoresearchMode && !fs.existsSync(autoresearchMdPath(resolveWorkDir(ctx.cwd)))) {
-            ctx.ui.notify("No experiments yet — run /autoresearch to get started", "info");
-          } else {
-            ctx.ui.notify("No experiments yet", "info");
-          }
-          return;
-        }
-        runtime.dashboardExpanded = !runtime.dashboardExpanded;
-        updateWidget(ctx);
-      },
-    });
-  }
-
-  // -----------------------------------------------------------------------
   // Fullscreen scrollable dashboard overlay shortcut
   // -----------------------------------------------------------------------
 
@@ -2968,7 +2835,6 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         const wasRunning = !ctx.isIdle();
 
         setAutoresearchMode(ctx, false);
-        runtime.dashboardExpanded = false;
         runtime.autoResumeTurns = 0;
         runtime.experimentsThisSession = 0;
         runtime.lastRunChecks = null;
@@ -2993,7 +2859,6 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       if (command === "clear") {
         const jsonlPath = autoresearchJsonlPath(resolveWorkDir(ctx.cwd));
         setAutoresearchMode(ctx, false);
-        runtime.dashboardExpanded = false;
         runtime.autoResumeTurns = 0;
         runtime.experimentsThisSession = 0;
         runtime.lastRunChecks = null;

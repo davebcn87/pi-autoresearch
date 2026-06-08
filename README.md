@@ -63,7 +63,6 @@ pi install npm:pi-autoresearch
 
 | Shortcut     | Description |
 |--------------|-------------|
-| `Ctrl+Shift+T` | Toggle dashboard expand/collapse (inline widget ↔ full results table above the editor) |
 | `Ctrl+Shift+F` | Open fullscreen scrollable dashboard overlay. Navigate with `↑`/`↓`/`j`/`k`, `PageUp`/`PageDown`/`u`/`d`, `g`/`G` for top/bottom, `Escape` or `q` to close. |
 
 To avoid conflicts with other pi extensions, override or disable these shortcuts in
@@ -73,8 +72,7 @@ config directory (usually `~/.pi/agent`, or `PI_CODING_AGENT_DIR` when set):
 ```json
 {
   "shortcuts": {
-    "toggleDashboard": "ctrl+shift+y",
-    "fullscreenDashboard": null
+    "fullscreenDashboard": "ctrl+shift+y"
   }
 }
 ```
@@ -83,9 +81,8 @@ Use `null` to skip registering a shortcut. Omitted shortcuts keep their defaults
 
 ### UI
 
-- **Status widget** — always visible above the editor: `🔬 autoresearch 12 runs 8 kept │ ★ total_µs: 15,200 (-12.3%) │ conf: 2.1×`
+- **Dashboard widget** — always visible above the editor: a full results table with columns for commit, metric, status, and description.
 - **Confidence score** — after 3+ runs, shows how the best improvement compares to the session noise floor. ≥2.0× (green) = likely real, 1.0–2.0× (yellow) = above noise but marginal, <1.0× (red) = within noise.
-- **Expanded dashboard** — `Ctrl+Shift+T` expands the widget into a full results table with columns for commit, metric, status, and description.
 - **Fullscreen overlay** — `Ctrl+Shift+F` opens a scrollable full-terminal dashboard. Shows a live spinner with elapsed time for running experiments.
 
 ### Skills
@@ -156,8 +153,7 @@ The agent reads `autoresearch.jsonl`, groups kept experiments into logical chang
 
 ### 4. Monitor progress
 
-- **Widget** — always visible above the editor
-- **`Ctrl+Shift+T`** — expand/collapse the full results table inline (config key: `shortcuts.toggleDashboard`)
+- **Widget** — full results table, always visible above the editor
 - **`Ctrl+Shift+F`** — fullscreen scrollable dashboard overlay (config key: `shortcuts.fullscreenDashboard`)
 - **`/autoresearch export`** — open a live browser dashboard with chart and share card
 - **`Escape`** — interrupt anytime and ask for a summary
@@ -232,7 +228,7 @@ After 3+ experiments in a session, pi-autoresearch computes a **confidence score
 
 - Uses [Median Absolute Deviation (MAD)](https://en.wikipedia.org/wiki/Median_absolute_deviation) of all metric values in the current segment as a robust noise estimator.
 - Confidence = `|best_improvement| / MAD`. A score of 2.0× means the best improvement is twice the noise floor.
-- Shown in the widget, expanded dashboard, and `log_experiment` output.
+- Shown in the widget, fullscreen dashboard, and `log_experiment` output.
 - Persisted to `autoresearch.jsonl` on each result for post-hoc analysis.
 - **Advisory only** — never auto-discards. The agent is guided to re-run experiments when confidence is low, but the final keep/discard decision stays with the agent.
 

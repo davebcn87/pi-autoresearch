@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- The dashboard widget is now always expanded — the full results table renders inline above the editor at all times. Removed the collapsed one-liner mode and the `Ctrl+Shift+T` expand/collapse toggle (and its `shortcuts.toggleDashboard` config key). Fullscreen (`Ctrl+Shift+F`) remains the only dashboard toggle.
+
 ## [1.5.0] - 2026-06-04
 
 ### Changed

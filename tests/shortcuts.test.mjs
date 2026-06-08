@@ -7,7 +7,6 @@ import test from "node:test";
 import {
   autoresearchShortcutsConfigPath,
   DEFAULT_FULLSCREEN_DASHBOARD_SHORTCUT,
-  DEFAULT_TOGGLE_DASHBOARD_SHORTCUT,
   resolveAutoresearchShortcuts,
 } from "../extensions/pi-autoresearch/shortcuts.ts";
 import autoresearchExtension from "../extensions/pi-autoresearch/index.ts";
@@ -19,7 +18,6 @@ test("autoresearch shortcuts default to the documented bindings when config is a
     const shortcuts = resolveAutoresearchShortcuts(configPath);
 
     assert.equal(configPath, join(agentDir, "extensions", "pi-autoresearch.json"));
-    assert.equal(shortcuts.toggleDashboard, DEFAULT_TOGGLE_DASHBOARD_SHORTCUT);
     assert.equal(shortcuts.fullscreenDashboard, DEFAULT_FULLSCREEN_DASHBOARD_SHORTCUT);
   } finally {
     await rm(agentDir, { recursive: true, force: true });
@@ -35,7 +33,6 @@ test("autoresearch shortcuts can be overridden by the config file", async () => 
       configPath,
       JSON.stringify({
         shortcuts: {
-          toggleDashboard: "ctrl+shift+y",
           fullscreenDashboard: "ctrl+shift+u",
         },
       })
@@ -43,7 +40,6 @@ test("autoresearch shortcuts can be overridden by the config file", async () => 
 
     const shortcuts = resolveAutoresearchShortcuts(configPath);
 
-    assert.equal(shortcuts.toggleDashboard, "ctrl+shift+y");
     assert.equal(shortcuts.fullscreenDashboard, "ctrl+shift+u");
   } finally {
     await rm(agentDir, { recursive: true, force: true });
@@ -59,7 +55,6 @@ test("autoresearch shortcuts can be disabled with null in the config file", asyn
       configPath,
       JSON.stringify({
         shortcuts: {
-          toggleDashboard: null,
           fullscreenDashboard: null,
         },
       })
@@ -67,7 +62,6 @@ test("autoresearch shortcuts can be disabled with null in the config file", asyn
 
     const shortcuts = resolveAutoresearchShortcuts(configPath);
 
-    assert.equal(shortcuts.toggleDashboard, null);
     assert.equal(shortcuts.fullscreenDashboard, null);
   } finally {
     await rm(agentDir, { recursive: true, force: true });
@@ -82,15 +76,12 @@ test("partial shortcut config defaults omitted fields independently", async () =
     await writeFile(
       configPath,
       JSON.stringify({
-        shortcuts: {
-          toggleDashboard: "ctrl+shift+y",
-        },
+        shortcuts: {},
       })
     );
 
     const shortcuts = resolveAutoresearchShortcuts(configPath);
 
-    assert.equal(shortcuts.toggleDashboard, "ctrl+shift+y");
     assert.equal(shortcuts.fullscreenDashboard, DEFAULT_FULLSCREEN_DASHBOARD_SHORTCUT);
   } finally {
     await rm(agentDir, { recursive: true, force: true });
@@ -110,7 +101,6 @@ test("malformed shortcut config warns and falls back to defaults", async () => {
     const shortcuts = resolveAutoresearchShortcuts(configPath);
 
     assert.deepEqual(shortcuts, {
-      toggleDashboard: DEFAULT_TOGGLE_DASHBOARD_SHORTCUT,
       fullscreenDashboard: DEFAULT_FULLSCREEN_DASHBOARD_SHORTCUT,
     });
     assert.equal(warnings.length, 1);
@@ -134,8 +124,7 @@ test("invalid known shortcut fields warn and fall back to defaults for the whole
       configPath,
       JSON.stringify({
         shortcuts: {
-          toggleDashboard: 123,
-          fullscreenDashboard: "ctrl+shift+u",
+          fullscreenDashboard: 123,
         },
       })
     );
@@ -143,7 +132,6 @@ test("invalid known shortcut fields warn and fall back to defaults for the whole
     const shortcuts = resolveAutoresearchShortcuts(configPath);
 
     assert.deepEqual(shortcuts, {
-      toggleDashboard: DEFAULT_TOGGLE_DASHBOARD_SHORTCUT,
       fullscreenDashboard: DEFAULT_FULLSCREEN_DASHBOARD_SHORTCUT,
     });
     assert.equal(warnings.length, 1);
@@ -187,8 +175,7 @@ test("extension registers shortcuts from the active profile config", async () =>
       configPath,
       JSON.stringify({
         shortcuts: {
-          toggleDashboard: "ctrl+shift+y",
-          fullscreenDashboard: null,
+          fullscreenDashboard: "ctrl+shift+u",
         },
       })
     );
@@ -196,7 +183,7 @@ test("extension registers shortcuts from the active profile config", async () =>
     withAgentDir(agentDir, () => {
       assert.deepEqual(
         collectRegisteredShortcuts().map((entry) => entry.shortcut),
-        ["ctrl+shift+y"]
+        ["ctrl+shift+u"]
       );
     });
   } finally {
