@@ -731,6 +731,77 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# Test: .auto/ session folder excluded (current layout)
+# ---------------------------------------------------------------------------
+
+test_auto_dir_session_artifacts() {
+  TESTS_RUN=$((TESTS_RUN + 1))
+  local REPO
+  REPO=$(mktemp -d)
+  cd "$REPO"
+  git init --quiet
+  git checkout -b main
+
+  mkdir -p libs/polaris
+  echo "original" > libs/polaris/component.ts
+  git add -A && git commit -m "initial" --quiet
+
+  git checkout -b autoresearch/auto-dir-test --quiet
+
+  # Current layout: everything under .auto/ (root and nested)
+  mkdir -p .auto libs/polaris/.auto
+  echo '{"type":"config"}' > .auto/log.jsonl
+  echo "# session" > .auto/prompt.md
+  echo "#!/bin/bash" > .auto/measure.sh
+  echo '{"type":"config"}' > libs/polaris/.auto/log.jsonl
+  echo "optimized" > libs/polaris/component.ts
+  git add -A && git commit -m "optimize + .auto session files" --quiet
+
+  local BASE FINAL
+  BASE=$(git merge-base HEAD main)
+  FINAL=$(git rev-parse HEAD)
+
+  cat > "$REPO/groups.json" << EOF
+{
+  "base": "$BASE",
+  "trunk": "main",
+  "final_tree": "$FINAL",
+  "goal": "test",
+  "groups": [
+    {
+      "title": "Optimize component",
+      "body": "Metric: 10ms → 5ms (-50%)",
+      "last_commit": "$FINAL",
+      "slug": "optimize"
+    }
+  ]
+}
+EOF
+
+  local OUTPUT
+  OUTPUT=$(bash "$FINALIZE" "$REPO/groups.json" 2>&1) || { fail_test ".auto dir session artifacts" "Script failed: $OUTPUT"; cleanup_repo "$REPO"; return; }
+
+  # Branch should only have component.ts, nothing under .auto/
+  local BRANCH="autoresearch/test/01-optimize"
+  for f in $(git diff-tree --no-commit-id --name-only -r "$(git rev-parse "$BRANCH")"); do
+    case "/$f/" in
+      */.auto/*)
+        fail_test ".auto dir session artifacts" "Session artifact '$f' leaked into branch"
+        cleanup_repo "$REPO"
+        return
+        ;;
+    esac
+  done
+
+  local CONTENT
+  CONTENT=$(git show "$BRANCH":libs/polaris/component.ts)
+  [ "$CONTENT" = "optimized" ] || { fail_test ".auto dir session artifacts" "component.ts wrong: $CONTENT"; cleanup_repo "$REPO"; return; }
+
+  pass ".auto dir session artifacts"
+  cleanup_repo "$REPO"
+}
+
+# ---------------------------------------------------------------------------
 # Test: verification failure leaves branches intact and returns to orig branch
 # ---------------------------------------------------------------------------
 
@@ -1015,6 +1086,7 @@ test_detached_head
 test_on_trunk
 test_basic_two_groups
 test_nested_session_artifacts
+test_auto_dir_session_artifacts
 test_verify_failure_leaves_branches
 test_stash_pop_on_rollback
 test_skipped_empty_group

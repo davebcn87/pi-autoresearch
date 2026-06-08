@@ -44,6 +44,7 @@ fail() { cleanup_data; echo -e "${RED}ERROR: $1${NC}" >&2; exit 1; }
 
 is_session_file() {
   case "/$1/" in
+    */.auto/*) return 0;;
     */autoresearch.*/*) return 0;;
     *) return 1;;
   esac
@@ -404,13 +405,20 @@ print_summary() {
   echo "Cleanup — after merging, delete the autoresearch branch and session files:"
   echo ""
   echo "  git branch -D $ORIG_BRANCH"
-  echo "  rm -f autoresearch.jsonl autoresearch.sh autoresearch.md autoresearch.ideas.md"
+  echo "  rm -r .auto    # session folder (current layout)"
+  echo "  rm -f autoresearch.jsonl autoresearch.sh autoresearch.md autoresearch.ideas.md    # legacy flat files, if any"
 
-  if [ -f "autoresearch.ideas.md" ]; then
+  local ideas_file=""
+  if [ -f ".auto/ideas.md" ]; then
+    ideas_file=".auto/ideas.md"
+  elif [ -f "autoresearch.ideas.md" ]; then
+    ideas_file="autoresearch.ideas.md"
+  fi
+  if [ -n "$ideas_file" ]; then
     echo ""
-    echo "Ideas backlog (from autoresearch.ideas.md):"
+    echo "Ideas backlog (from $ideas_file):"
     echo ""
-    sed 's/^/  /' autoresearch.ideas.md
+    sed 's/^/  /' "$ideas_file"
   fi
 
   echo ""

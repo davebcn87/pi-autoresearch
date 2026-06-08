@@ -1,13 +1,12 @@
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
-import * as path from "node:path";
 
 import { hasAutoresearchConfigHeader } from "./jsonl.ts";
+import { hookScriptPath } from "./paths.ts";
 
 const TIMEOUT_MS = 30_000;
 const STDOUT_MAX_BYTES = 8 * 1024;
 const TRUNCATION_MARKER = "\n…[truncated: hook stdout exceeded 8KB]";
-const HOOKS_DIR = "autoresearch.hooks";
 
 const NEWLINE = 0x0a;
 const UTF8_CONT_MASK = 0xc0;
@@ -60,10 +59,6 @@ export interface HookResult {
   exitCode: number | null;
   timedOut: boolean;
   durationMs: number;
-}
-
-export function hookScriptPath(workDir: string, stage: HookStage): string {
-  return path.join(workDir, HOOKS_DIR, `${stage}.sh`);
 }
 
 function isExecutableFile(filePath: string): boolean {

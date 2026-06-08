@@ -9,7 +9,7 @@
 
 set -euo pipefail
 
-readonly DOCS_FILE="autoresearch.docs.md"
+readonly DOCS_FILE=".auto/docs.md"
 readonly RESULT_LIMIT=5
 
 query_from_agent_notes() {
@@ -33,5 +33,6 @@ query=$(query_from_agent_notes "$input")
 [ -z "$query" ] && exit 0
 
 workdir="$(jq -r '.cwd' <<<"$input")"
+mkdir -p "$(dirname "$workdir/$DOCS_FILE")"
 fetch_docs "$query" > "$workdir/$DOCS_FILE"
 echo "Docs saved → $DOCS_FILE (query: $query)"

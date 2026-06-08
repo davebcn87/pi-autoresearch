@@ -10,8 +10,8 @@ Turn a noisy autoresearch branch into clean, independent branches — one per lo
 
 ## Step 1 — Analyze and Propose Groups
 
-1. Read `autoresearch.jsonl`. Filter to **kept** experiments only.
-2. Read `autoresearch.md` for context.
+1. Read `.auto/log.jsonl` (legacy: `autoresearch.jsonl`). Filter to **kept** experiments only.
+2. Read `.auto/prompt.md` (legacy: `autoresearch.md`) for context.
 3. Expand all short commit hashes to full hashes: `git rev-parse <short_hash>`
 4. Get the merge-base: `git merge-base HEAD main`
 5. For each kept commit, get the diff stat (use `$BASE..<commit>` for the first, `<prev_kept>..<commit>` for subsequent).
@@ -69,7 +69,7 @@ Then run:
 bash <SKILL_DIR>/finalize.sh /tmp/groups.json
 ```
 
-The script creates one branch per group from the merge-base, verifies the union matches the original branch, and prints a summary with all branches, cleanup commands, and any ideas from `autoresearch.ideas.md`.
+The script creates one branch per group from the merge-base, verifies the union matches the original branch, and prints a summary with all branches, cleanup commands, and any ideas from `.auto/ideas.md` (legacy: `autoresearch.ideas.md`).
 
 On creation failure: rolls back (deletes branches, restores original branch, pops stash).
 On verification failure: exits non-zero but leaves branches intact for inspection.

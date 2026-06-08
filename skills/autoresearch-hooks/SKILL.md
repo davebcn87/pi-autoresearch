@@ -8,7 +8,7 @@ description: Author pre/post-iteration hooks for an autoresearch session. Use wh
 Optional scripts that run at iteration boundaries in an autoresearch session. Two hooks, both transparent to the loop-running agent — their effect is a file on disk or a steer message.
 
 ```
-autoresearch.hooks/
+.auto/hooks/
   before.sh    # fires before each iteration (prospective)
   after.sh     # fires after each log_experiment (retrospective)
 ```
@@ -100,7 +100,7 @@ One JSON line. Parse with `jq`. Realistic example:
 
 ### Preservation
 
-`autoresearch.hooks/**` survives the auto-revert, like all paths matching `autoresearch.*`.
+`.auto/**` survives the auto-revert — the entire `.auto/` folder is preserved. (Legacy `autoresearch.*` paths are still preserved too, for in-flight sessions.)
 
 ---
 
@@ -111,13 +111,13 @@ Runnable reference scripts live in this skill's `examples/` directory — one fi
 - `examples/before/` — external search, qmd document search, anti-thrash, idea rotator, hypothesis reflection, context rotation
 - `examples/after/` — learnings journal, macOS notification on new best, auto-tag winning commits
 
-Each example is a complete, self-contained script with named constants, short helper functions, guard clauses, and intention-revealing names. Read the header comment for its purpose, copy to `autoresearch.hooks/<stage>.sh`, adapt.
+Each example is a complete, self-contained script with named constants, short helper functions, guard clauses, and intention-revealing names. Read the header comment for its purpose, copy to `.auto/hooks/<stage>.sh`, adapt.
 
 ---
 
 ## Steps to add a hook
 
-1. **Understand the session.** Read `autoresearch.md` for the objective and metric; glance at `autoresearch.sh` for the workload. Your hook should complement the loop, not duplicate it.
+1. **Understand the session.** Read `.auto/prompt.md` for the objective and metric; glance at `.auto/measure.sh` for the workload. Your hook should complement the loop, not duplicate it.
 
 2. **Clarify the user's intent.** What should happen, at which boundary? Research before / log after / notify on wins / intervene on thrash / etc.
 
@@ -126,10 +126,10 @@ Each example is a complete, self-contained script with named constants, short he
 4. **Copy, adapt, mark executable.**
 
    ```bash
-   mkdir -p autoresearch.hooks
-   cp "<skill-dir>/examples/before/external-search.sh" autoresearch.hooks/before.sh
+   mkdir -p .auto/hooks
+   cp "<skill-dir>/examples/before/external-search.sh" .auto/hooks/before.sh
    # ... adapt the script ...
-   chmod +x autoresearch.hooks/before.sh
+   chmod +x .auto/hooks/before.sh
    ```
 
 5. **Sanity-test with a piped mock** before relying on it in the loop:
@@ -151,12 +151,12 @@ Each example is a complete, self-contained script with named constants, short he
          goal: "test"
        }
      }
-   ' | ./autoresearch.hooks/before.sh
+   ' | ./.auto/hooks/before.sh
    ```
 
    For `after.sh`, swap `last_run: null` for a `run_entry` object (see the schema above).
 
-6. **Commit the hook** alongside other session files. It's preserved across reverts because the path matches `autoresearch.*`.
+6. **Commit the hook** alongside other session files. It's preserved across reverts because it lives under `.auto/`.
 
 ---
 

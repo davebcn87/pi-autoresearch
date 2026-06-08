@@ -366,12 +366,12 @@
         .then(resp => resp.ok ? resp.text() : null)
         .then(text => {
           if (!text) {
-            setMetaMessage('No autoresearch.jsonl found.', true);
+            setMetaMessage('No session log found.', true);
             return;
           }
           if (text !== lastDataText) loadFromText(text);
         })
-        .catch(() => setMetaMessage('Failed to load autoresearch.jsonl.', true));
+        .catch(() => setMetaMessage('Failed to load session log.', true));
     }
 
     function parseAutoresearchText(text) {

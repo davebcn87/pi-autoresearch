@@ -15,6 +15,7 @@ import {
   type ReconstructedJsonlState,
   type ReconstructedRun,
 } from "./jsonl.ts";
+import { sessionFilePath } from "./paths.ts";
 
 const RECENT_RUN_LIMIT = 50;
 
@@ -31,9 +32,9 @@ export interface AutoresearchSummaryPaths {
 export function autoresearchSummaryPathsFor(workDir: string): AutoresearchSummaryPaths {
   return {
     workDir,
-    jsonlPath: path.join(workDir, "autoresearch.jsonl"),
-    mdPath: path.join(workDir, "autoresearch.md"),
-    ideasPath: path.join(workDir, "autoresearch.ideas.md"),
+    jsonlPath: sessionFilePath(workDir, "log"),
+    mdPath: sessionFilePath(workDir, "prompt"),
+    ideasPath: sessionFilePath(workDir, "ideas"),
   };
 }
 
@@ -46,9 +47,9 @@ export function buildAutoresearchCompactionSummary(paths: AutoresearchSummaryPat
   const sections = [
     headerSection(),
     sessionSection(state),
-    rulesSection(paths.mdPath),
-    ideasSection(paths.ideasPath),
-    recentRunsSection(state),
+    rulesSection(paths.workDir, paths.mdPath),
+    ideasSection(paths.workDir, paths.ideasPath),
+    recentRunsSection(state, paths.workDir, paths.jsonlPath),
     nextStepSection(),
   ];
   return sections.filter(Boolean).join("\n\n");
@@ -137,19 +138,25 @@ function isBetter(value: number, current: number, direction: "lower" | "higher")
   return direction === "lower" ? value < current : value > current;
 }
 
-function rulesSection(mdPath: string): string {
+function readablePath(workDir: string, filePath: string): string {
+  const relative = path.relative(workDir, filePath);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) return filePath;
+  return relative;
+}
+
+function rulesSection(workDir: string, mdPath: string): string {
   const content = readTrimmedFile(mdPath);
   if (!content) return "";
-  return `## Experiment Rules (autoresearch.md)\n\n${content}`;
+  return `## Experiment Rules (${readablePath(workDir, mdPath)})\n\n${content}`;
 }
 
-function ideasSection(ideasPath: string): string {
+function ideasSection(workDir: string, ideasPath: string): string {
   const content = readTrimmedFile(ideasPath);
   if (!content) return "";
-  return `## Ideas Backlog (autoresearch.ideas.md)\n\n${content}`;
+  return `## Ideas Backlog (${readablePath(workDir, ideasPath)})\n\n${content}`;
 }
 
-function recentRunsSection(state: ReconstructedJsonlState): string {
+function recentRunsSection(state: ReconstructedJsonlState, workDir: string, jsonlPath: string): string {
   const runs = state.results.slice(-RECENT_RUN_LIMIT);
   if (runs.length === 0) {
     return "## Recent Runs\n\nNo runs yet — start with the first hypothesis.";
@@ -162,7 +169,7 @@ function recentRunsSection(state: ReconstructedJsonlState): string {
     "",
     ...lines,
     "",
-    "If you need more details, read additional lines from autoresearch.jsonl.",
+    `If you need more details, read additional lines from ${readablePath(workDir, jsonlPath)}.`,
   ].join("\n");
 }
 

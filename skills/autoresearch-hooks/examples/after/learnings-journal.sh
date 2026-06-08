@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-readonly LEARNINGS_FILE="autoresearch.learnings.md"
+readonly LEARNINGS_FILE=".auto/learnings.md"
 
 run_number()     { jq -r '.run_entry.run' <<<"$1"; }
 run_status()     { jq -r '.run_entry.status' <<<"$1"; }
@@ -13,6 +13,7 @@ run_hypothesis() { jq -r '.run_entry.asi.hypothesis // "-"' <<<"$1"; }
 
 append_journal_line() {
   local file="$1" run="$2" status="$3" metric="$4" hyp="$5"
+  mkdir -p "$(dirname "$file")"
   printf 'run=%s status=%s metric=%s hyp=%s\n' "$run" "$status" "$metric" "$hyp" >> "$file"
 }
 

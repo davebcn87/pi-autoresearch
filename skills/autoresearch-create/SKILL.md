@@ -13,15 +13,31 @@ Autonomous experiment loop: try ideas, keep what works, discard what doesn't, ne
 - **`run_experiment`** — runs command, times it, captures output.
 - **`log_experiment`** — records result. `keep` auto-commits. `discard`/`crash`/`checks_failed` auto-reverts code changes (autoresearch files preserved). Always include secondary `metrics` dict. Dashboard: ctrl+shift+t.
 
+## Session files
+
+All session files live in a single `.auto/` subfolder at the working directory root. This keeps everything in one place — easy to preserve across reverts, gitignore, and clean up.
+
+| File | Purpose |
+|------|---------|
+| `.auto/prompt.md` | Experiment prompt / playbook (heart of the session) |
+| `.auto/measure.sh` | Benchmark script — emits `METRIC name=value` lines |
+| `.auto/log.jsonl` | Append-only result log (written by the tools) |
+| `.auto/ideas.md` | Ideas backlog (optional) |
+| `.auto/checks.sh` | Correctness checks (optional) |
+| `.auto/config.json` | Session config (optional) |
+| `.auto/hooks/{before,after}.sh` | Lifecycle hooks (optional) |
+
+> Always create files in the `.auto/` layout. Legacy flat `autoresearch.*` files are still read for in-flight sessions, but new sessions should use `.auto/`.
+
 ## Setup
 
 1. Ask (or infer): **Goal**, **Command**, **Metric** (+ direction), **Files in scope**, **Constraints**.
 2. `git checkout -b autoresearch/<goal>-<date>`
 3. Read the source files. Understand the workload deeply before writing anything.
-4. Write `autoresearch.md` and `autoresearch.sh` (see below). Commit both.
+4. `mkdir -p .auto`, then write `.auto/prompt.md` and `.auto/measure.sh` (see below). Commit both.
 5. `init_experiment` → run baseline → `log_experiment` → start looping immediately.
 
-### `autoresearch.md`
+### `.auto/prompt.md`
 
 This is the heart of the session. A fresh agent with no context should be able to read this file and run the loop effectively. Invest time making it excellent.
 
@@ -36,7 +52,7 @@ This is the heart of the session. A fresh agent with no context should be able t
 - **Secondary**: <name>, <name>, ... — independent tradeoff monitors
 
 ## How to Run
-`./autoresearch.sh` — outputs `METRIC name=number` lines.
+`./.auto/measure.sh` — outputs `METRIC name=number` lines.
 
 ## Files in Scope
 <Every file the agent may modify, with a brief note on what it does.>
@@ -52,9 +68,9 @@ This is the heart of the session. A fresh agent with no context should be able t
 and architectural insights so the agent doesn't repeat failed approaches.>
 ```
 
-Update `autoresearch.md` periodically — especially the "What's Been Tried" section — so resuming agents have full context.
+Update `.auto/prompt.md` periodically — especially the "What's Been Tried" section — so resuming agents have full context.
 
-### `autoresearch.sh`
+### `.auto/measure.sh`
 
 Bash script (`set -euo pipefail`) that: pre-checks fast (syntax errors in <1s), runs the benchmark, and outputs structured lines to stdout. Keep the script fast — every second is multiplied by hundreds of runs.
 
@@ -79,14 +95,14 @@ The script runs the same code every iteration — but you can **update it during
 
 Use `log_experiment`'s `asi` parameter to annotate each run with **whatever would help the next iteration make a better decision.** Free-form key/value pairs — you decide what's worth recording. Don't repeat the description or raw output; capture what you'd lose after a context reset.
 
-**Annotate failures and crashes heavily.** Discarded and crashed runs are reverted — the code changes are gone. The only record that survives is the description and ASI in `autoresearch.jsonl`. If you don't capture what you tried and why it failed, future iterations will waste time re-discovering the same dead ends.
+**Annotate failures and crashes heavily.** Discarded and crashed runs are reverted — the code changes are gone. The only record that survives is the description and ASI in `.auto/log.jsonl`. If you don't capture what you tried and why it failed, future iterations will waste time re-discovering the same dead ends.
 
-### `autoresearch.config.json` (optional)
+### `.auto/config.json` (optional)
 
-JSON config file that lives in the pi session's working directory (`ctx.cwd`). Supported fields:
+JSON config file that lives in `.auto/` under the pi session's working directory (`ctx.cwd`). Supported fields:
 
 - **`maxIterations`** (number) — maximum experiments before auto-stopping.
-- **`workingDir`** (string) — override the directory for all autoresearch operations: file I/O (`autoresearch.jsonl`, `autoresearch.md`, `autoresearch.sh`, `autoresearch.checks.sh`, `autoresearch.ideas.md`), command execution, and git operations. Supports absolute paths or relative paths (resolved against `ctx.cwd`). The config file itself always stays in `ctx.cwd`. Fails if the directory doesn't exist.
+- **`workingDir`** (string) — override the directory for all autoresearch operations: file I/O (`.auto/log.jsonl`, `.auto/prompt.md`, `.auto/measure.sh`, `.auto/checks.sh`, `.auto/ideas.md`), command execution, and git operations. Supports absolute paths or relative paths (resolved against `ctx.cwd`). The config file itself always stays under `ctx.cwd`. Fails if the directory doesn't exist.
 
 ```json
 {
@@ -95,7 +111,7 @@ JSON config file that lives in the pi session's working directory (`ctx.cwd`). S
 }
 ```
 
-### `autoresearch.checks.sh` (optional)
+### `.auto/checks.sh` (optional)
 
 Bash script (`set -euo pipefail`) for backpressure/correctness checks: tests, types, lint, etc. **Only create this file when the user's constraints require correctness validation** (e.g., "tests must pass", "types must check").
 
@@ -129,15 +145,15 @@ pnpm typecheck 2>&1 | grep -i error || true
 - **Don't thrash.** Repeatedly reverting the same idea? Try something structurally different.
 - **Crashes:** fix if trivial, otherwise log and move on. Don't over-invest.
 - **Think longer when stuck.** Re-read source files, study the profiling data, reason about what the CPU is actually doing. The best ideas come from deep understanding, not from trying random variations.
-- **Resuming:** if `autoresearch.md` exists, read it + git log, continue looping.
+- **Resuming:** if `.auto/prompt.md` exists, read it + git log, continue looping.
 
 **NEVER STOP.** The user may be away for hours. Keep going until interrupted.
 
 ## Ideas Backlog
 
-When you discover complex but promising optimizations that you won't pursue right now, **append them as bullets to `autoresearch.ideas.md`**. Don't let good ideas get lost.
+When you discover complex but promising optimizations that you won't pursue right now, **append them as bullets to `.auto/ideas.md`**. Don't let good ideas get lost.
 
-On resume (context limit, crash), check `autoresearch.ideas.md` — prune stale/tried entries, experiment with the rest. When all paths are exhausted, delete the file and write a final summary.
+On resume (context limit, crash), check `.auto/ideas.md` — prune stale/tried entries, experiment with the rest. When all paths are exhausted, delete the file and write a final summary.
 
 ## User Messages During Experiments
 

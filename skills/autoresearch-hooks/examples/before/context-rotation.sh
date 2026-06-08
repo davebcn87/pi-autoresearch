@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# When autoresearch.md exceeds a size threshold, keep the preamble and
+# When the rules file exceeds a size threshold, keep the preamble and
 # archive the tail. Prevents session-document bloat from eating context.
 
 set -euo pipefail
@@ -18,9 +18,14 @@ archive_tail() {
   mv "$file.tmp" "$file"
 }
 
+resolve_prompt() {
+  [ -f "$1/.auto/prompt.md" ] && { echo "$1/.auto/prompt.md"; return; }
+  echo "$1/autoresearch.md"
+}
+
 input="$(cat)"
-md="$(jq -r '.cwd' <<<"$input")/autoresearch.md"
+md="$(resolve_prompt "$(jq -r '.cwd' <<<"$input")")"
 [ -f "$md" ] && file_too_large "$md" || exit 0
 
 archive_tail "$md"
-echo "Rotated autoresearch.md (kept first $KEEP_LINES lines, archived rest)."
+echo "Rotated $md (kept first $KEEP_LINES lines, archived rest)."

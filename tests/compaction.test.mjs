@@ -58,6 +58,28 @@ test("summary contains all persisted sources when present", () => {
   });
 });
 
+test("summary uses the .auto layout filenames when present", () => {
+  withTempWorkDir((workDir) => {
+    const autoDir = path.join(workDir, ".auto");
+    fs.mkdirSync(autoDir, { recursive: true });
+    fs.writeFileSync(path.join(autoDir, "prompt.md"), "# Rules\nDo not cheat.");
+    fs.writeFileSync(path.join(autoDir, "ideas.md"), "- Try memoization");
+    fs.writeFileSync(
+      path.join(autoDir, "log.jsonl"),
+      [
+        '{"type":"config","name":"Speed up parser","metricName":"total_us","metricUnit":"us","bestDirection":"lower"}',
+        '{"run":1,"commit":"aaa1111","metric":100,"status":"keep","description":"baseline","timestamp":1,"metrics":{}}',
+      ].join("\n") + "\n",
+    );
+
+    const summary = buildAutoresearchCompactionSummary(autoresearchSummaryPathsFor(workDir));
+
+    assert.match(summary, /## Experiment Rules \(\.auto\/prompt\.md\)/);
+    assert.match(summary, /## Ideas Backlog \(\.auto\/ideas\.md\)/);
+    assert.match(summary, /read additional lines from \.auto\/log\.jsonl\./);
+  });
+});
+
 test("session block omits baseline/best when no runs exist yet", () => {
   withTempWorkDir((workDir) => {
     writeJsonlLines(workDir, [

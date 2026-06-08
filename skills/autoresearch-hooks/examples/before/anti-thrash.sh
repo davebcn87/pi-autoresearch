@@ -16,13 +16,18 @@ recent_discard_count() {
 
 thrash_suggestions() {
   echo "⚠️ $1 consecutive discards. Consider:"
-  echo "  - Re-reading autoresearch.md and the benchmark script"
+  echo "  - Re-reading .auto/prompt.md and the benchmark script"
   echo "  - Trying something structurally different, not another variation"
   echo "  - Measuring what the CPU is actually spending time on"
 }
 
+resolve_jsonl() {
+  [ -f "$1/.auto/log.jsonl" ] && { echo "$1/.auto/log.jsonl"; return; }
+  echo "$1/autoresearch.jsonl"
+}
+
 input="$(cat)"
-jsonl="$(jq -r '.cwd' <<<"$input")/autoresearch.jsonl"
+jsonl="$(resolve_jsonl "$(jq -r '.cwd' <<<"$input")")"
 streak=$(recent_discard_count "$jsonl")
 
 [ "$streak" -lt "$STREAK_THRESHOLD" ] && exit 0

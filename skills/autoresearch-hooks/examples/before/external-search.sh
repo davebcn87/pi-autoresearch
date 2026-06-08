@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-readonly RESEARCH_FILE="autoresearch.research.md"
+readonly RESEARCH_FILE=".auto/research.md"
 readonly RESULT_LIMIT=5
 
 query_from_agent_notes() {
@@ -28,5 +28,6 @@ query=$(query_from_agent_notes "$input")
 [ -z "$query" ] && exit 0
 
 workdir="$(jq -r '.cwd' <<<"$input")"
+mkdir -p "$(dirname "$workdir/$RESEARCH_FILE")"
 fetch_results "$query" > "$workdir/$RESEARCH_FILE"
 echo "Research saved → $RESEARCH_FILE (query: $query)"
