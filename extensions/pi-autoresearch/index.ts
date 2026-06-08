@@ -57,6 +57,7 @@ import { resolveAutoresearchShortcuts } from "./shortcuts.ts";
 // ---------------------------------------------------------------------------
 const EXPERIMENT_MAX_LINES = 10;
 const EXPERIMENT_MAX_BYTES = 4 * 1024; // 4KB
+export const DEFAULT_MAX_AUTORESUME_TURNS = 20;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -429,6 +430,7 @@ function currentResults(results: ExperimentResult[], segment: number): Experimen
 
 interface AutoresearchConfig {
   maxIterations?: number;
+  maxAutoResumeTurns?: number;
   workingDir?: string;
 }
 
@@ -449,6 +451,14 @@ function readMaxExperiments(cwd: string): number | null {
   return (typeof config.maxIterations === "number" && config.maxIterations > 0)
     ? Math.floor(config.maxIterations)
     : null;
+}
+
+/** Read maxAutoResumeTurns from autoresearch.config.json, falling back to the safety default. */
+export function readMaxAutoResumeTurns(cwd: string): number {
+  const config = readConfig(cwd);
+  return (typeof config.maxAutoResumeTurns === "number" && config.maxAutoResumeTurns > 0)
+    ? Math.floor(config.maxAutoResumeTurns)
+    : DEFAULT_MAX_AUTORESUME_TURNS;
 }
 
 /**
@@ -972,7 +982,6 @@ function renderDashboardLines(
 // ---------------------------------------------------------------------------
 
 export default function autoresearchExtension(pi: ExtensionAPI) {
-  const MAX_AUTORESUME_TURNS = 20;
   const BENCHMARK_GUARDRAIL =
     "Be careful not to overfit to the benchmarks and do not cheat on the benchmarks.";
 
@@ -1041,7 +1050,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       return;
     }
     if (!isAgentSettled(ctx)) return;
-    if (hasReachedAutoResumeLimit(runtime)) {
+    if (hasReachedAutoResumeLimit(ctx, runtime)) {
       cancelPendingResume(runtime);
       notifyAutoResumeLimitReached(ctx);
       return;
@@ -1077,12 +1086,15 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   const shouldAutoResumeAfterCompact = (runtime: AutoresearchRuntime): boolean =>
     runtime.autoresearchMode;
 
-  const hasReachedAutoResumeLimit = (runtime: AutoresearchRuntime): boolean =>
-    runtime.autoResumeTurns >= MAX_AUTORESUME_TURNS;
+  const autoResumeLimit = (ctx: ExtensionContext): number =>
+    readMaxAutoResumeTurns(ctx.cwd);
+
+  const hasReachedAutoResumeLimit = (ctx: ExtensionContext, runtime: AutoresearchRuntime): boolean =>
+    runtime.autoResumeTurns >= autoResumeLimit(ctx);
 
   const notifyAutoResumeLimitReached = (ctx: ExtensionContext): void => {
     ctx.ui.notify(
-      `Autoresearch auto-resume limit reached (${MAX_AUTORESUME_TURNS} turns)`,
+      `Autoresearch auto-resume limit reached (${autoResumeLimit(ctx)} turns)`,
       "info",
     );
   };
@@ -1377,7 +1389,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       return;
     }
     if (!gate(runtime)) return;
-    if (hasReachedAutoResumeLimit(runtime)) {
+    if (hasReachedAutoResumeLimit(ctx, runtime)) {
       notifyAutoResumeLimitReached(ctx);
       return;
     }
