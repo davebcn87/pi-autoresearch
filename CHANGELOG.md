@@ -10,6 +10,10 @@ All notable changes to this project will be documented in this file.
 - `/autoresearch` can infer loop controls from natural language, e.g. “for 50 runs” or “continue indefinitely”, and writes the matching config automatically.
 - Optional `ask_autoresearch_hint` tool. When enabled in `.auto/config.json`, the loop can ask a configured larger pi model for bounded, side-effect-free strategy advice after stalled or failed experiment attempts.
 
+### Fixed
+
+- Autoresearch now hard-blocks activation and experiment logging outside a git working tree unless `.auto/config.json` explicitly sets `allowNoGit: true`, preventing unsafe `nogit` keep/discard loops that cannot commit or revert.
+
 ## [1.6.0] - 2026-06-08
 
 ### Changed

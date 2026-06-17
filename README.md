@@ -213,6 +213,7 @@ Create `.auto/config.json` in your pi session directory to customize behavior:
   "workingDir": "/path/to/project",
   "maxIterations": 50,
   "maxAutoResumeTurns": 50,
+  "allowNoGit": false,
   "hints": {
     "enabled": true,
     "provider": "anthropic",
@@ -230,6 +231,7 @@ Create `.auto/config.json` in your pi session directory to customize behavior:
 | `workingDir` | string | Override the directory for all autoresearch operations — file I/O, command execution, and git. Supports absolute or relative paths (resolved against the pi session cwd). The config file itself always stays under the session cwd. Fails if the directory doesn't exist. |
 | `maxIterations` | number | Maximum experiments before auto-stopping. The agent is told to stop and won't run more experiments until a new segment is initialized. |
 | `maxAutoResumeTurns` | number \| null | Safety valve for automatic resume prompts after completed turns or compactions. Defaults to `20` to prevent accidental chat-only loops. Set to `null` or `0` for unlimited auto-resume. |
+| `allowNoGit` | boolean | Defaults to `false`. Autoresearch refuses to start or log experiments unless `workingDir` is inside a git working tree, because keep/discard needs commit/revert protection. Set `true` only for disposable throwaway sessions. |
 | `hints` | object | Optional expensive-model hint tool config. Missing or `enabled: false` means no hint model calls are made. When enabled, `provider` and `model` must match a configured pi model. |
 
 `ask_autoresearch_hint` is a side-channel advisory tool. It never edits files,
@@ -358,6 +360,7 @@ Autoresearch loops run autonomously and can burn through tokens. Two ways to cap
      "maxIterations": 30
    }
    ```
+- **Git protection** — by default, autoresearch refuses to run outside a git working tree. This prevents no-git `keep`/`discard` runs that cannot commit or revert safely. For disposable throwaway sessions only, set `"allowNoGit": true` in `.auto/config.json`.
 - **`maxAutoResumeTurns`** — cap or remove the auto-resume safety valve. The default is `20`; set `null` or `0` only when you intentionally want unattended runs to continue indefinitely:
    ```json
    {

@@ -28,7 +28,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer, type Server, type ServerResponse } from "node:http";
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createWriteStream } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -456,6 +456,7 @@ export interface AutoresearchConfig {
   maxIterations?: number | null;
   maxAutoResumeTurns?: number | null;
   workingDir?: string;
+  allowNoGit?: boolean;
   hints?: unknown;
 }
 
@@ -599,6 +600,70 @@ function validateWorkDir(ctxCwd: string): string | null {
     return `workingDir "${workDir}" (from .auto/config.json) does not exist.`;
   }
   return null;
+}
+
+export interface AutoresearchGitSafetyResult {
+  ok: boolean;
+  workDir: string;
+  gitRoot?: string;
+  allowNoGit: boolean;
+  error?: string;
+  warning?: string;
+}
+
+/**
+ * Autoresearch relies on git for keep/discard safety. Refuse to start or log
+ * experiments outside a git working tree unless the user explicitly opts out.
+ */
+export function validateAutoresearchGitSafety(ctxCwd: string): AutoresearchGitSafetyResult {
+  const config = readConfig(ctxCwd);
+  const workDir = resolveWorkDir(ctxCwd);
+  const allowNoGit = config.allowNoGit === true;
+
+  const workDirError = validateWorkDir(ctxCwd);
+  if (workDirError) {
+    return { ok: false, workDir, allowNoGit, error: workDirError };
+  }
+
+  if (allowNoGit) {
+    return {
+      ok: true,
+      workDir,
+      allowNoGit,
+      warning: "allowNoGit=true: git keep/discard protection is disabled for this autoresearch session.",
+    };
+  }
+
+  const result = spawnSync("git", ["rev-parse", "--is-inside-work-tree", "--show-toplevel"], {
+    cwd: workDir,
+    encoding: "utf-8",
+    timeout: 5000,
+  });
+  const combined = `${result.stdout || ""}${result.stderr || ""}`.trim();
+  const lines = String(result.stdout || "").trim().split(/\r?\n/).filter(Boolean);
+
+  if (result.error) {
+    return {
+      ok: false,
+      workDir,
+      allowNoGit,
+      error: `Autoresearch git preflight failed in ${workDir}: ${result.error.message}`,
+    };
+  }
+
+  if (result.status !== 0 || lines[0] !== "true") {
+    return {
+      ok: false,
+      workDir,
+      allowNoGit,
+      error:
+        `Autoresearch requires workingDir to be inside a git working tree so keep/discard can commit or revert safely. ` +
+        `Refusing to run in ${workDir}.${combined ? ` Git said: ${combined.slice(0, 240)}` : ""} ` +
+        `Initialize git or set { "allowNoGit": true } in .auto/config.json only for throwaway sessions.`,
+    };
+  }
+
+  return { ok: true, workDir, gitRoot: lines[1], allowNoGit };
 }
 
 interface ManualOffState {
@@ -1898,6 +1963,14 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         };
       }
 
+      const gitSafety = validateAutoresearchGitSafety(ctx.cwd);
+      if (!gitSafety.ok) {
+        return {
+          content: [{ type: "text", text: `❌ ${gitSafety.error}` }],
+          details: { workDir: gitSafety.workDir, allowNoGit: gitSafety.allowNoGit },
+        };
+      }
+
       const isReinit = state.results.length > 0;
 
       state.name = params.name;
@@ -2015,6 +2088,13 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         return {
           content: [{ type: "text", text: `❌ ${workDirError}` }],
           details: {},
+        };
+      }
+      const gitSafety = validateAutoresearchGitSafety(ctx.cwd);
+      if (!gitSafety.ok) {
+        return {
+          content: [{ type: "text", text: `❌ ${gitSafety.error}` }],
+          details: { workDir: gitSafety.workDir, allowNoGit: gitSafety.allowNoGit },
         };
       }
       const workDir = resolveWorkDir(ctx.cwd);
@@ -2533,6 +2613,13 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         return {
           content: [{ type: "text", text: `❌ ${workDirError}` }],
           details: {},
+        };
+      }
+      const gitSafety = validateAutoresearchGitSafety(ctx.cwd);
+      if (!gitSafety.ok) {
+        return {
+          content: [{ type: "text", text: `❌ ${gitSafety.error}` }],
+          details: { workDir: gitSafety.workDir, allowNoGit: gitSafety.allowNoGit },
         };
       }
       const workDir = resolveWorkDir(ctx.cwd);
@@ -3339,6 +3426,15 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         runtime.state.maxExperiments = readMaxExperiments(ctx.cwd);
         runtime.autoResumeTurns = 0;
         configNote = notes.length > 0 ? ` Config: ${notes.join(", ")}.` : "";
+      }
+
+      const gitSafety = validateAutoresearchGitSafety(ctx.cwd);
+      if (!gitSafety.ok) {
+        ctx.ui.notify(`Autoresearch blocked: ${gitSafety.error}`, "error");
+        return;
+      }
+      if (gitSafety.warning) {
+        ctx.ui.notify(`Autoresearch warning: ${gitSafety.warning}`, "info");
       }
 
       if (runtime.autoresearchMode) {

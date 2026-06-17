@@ -32,10 +32,11 @@ All session files live in a single `.auto/` subfolder at the working directory r
 ## Setup
 
 1. Ask (or infer): **Goal**, **Command**, **Metric** (+ direction), **Files in scope**, **Constraints**.
-2. `git checkout -b autoresearch/<goal>-<date>`
-3. Read the source files. Understand the workload deeply before writing anything.
-4. `mkdir -p .auto`, then write `.auto/prompt.md` and `.auto/measure.sh` (see below). Commit both.
-5. `init_experiment` → run baseline → `log_experiment` → start looping immediately.
+2. Verify the effective working directory is inside git: `git rev-parse --is-inside-work-tree`. If not, stop and ask the user to initialize git or explicitly set `allowNoGit: true` for a throwaway session.
+3. `git checkout -b autoresearch/<goal>-<date>`
+4. Read the source files. Understand the workload deeply before writing anything.
+5. `mkdir -p .auto`, then write `.auto/prompt.md` and `.auto/measure.sh` (see below). Commit both.
+6. `init_experiment` → run baseline → `log_experiment` → start looping immediately.
 
 ### `.auto/prompt.md`
 
@@ -104,13 +105,15 @@ JSON config file that lives in `.auto/` under the pi session's working directory
 - **`maxIterations`** (number) — maximum experiments before auto-stopping.
 - **`maxAutoResumeTurns`** (number or null) — maximum automatic resume prompts before the safety valve stops the loop. Defaults to 20. Set to `null` or `0` for intentional unlimited auto-resume.
 - **`workingDir`** (string) — override the directory for all autoresearch operations: file I/O (`.auto/log.jsonl`, `.auto/prompt.md`, `.auto/measure.sh`, `.auto/checks.sh`, `.auto/ideas.md`), command execution, and git operations. Supports absolute paths or relative paths (resolved against `ctx.cwd`). The config file itself always stays under `ctx.cwd`. Fails if the directory doesn't exist.
+- **`allowNoGit`** (boolean) — defaults to `false`. The extension refuses to start or log experiments unless `workingDir` is inside a git working tree, because keep/discard needs commit/revert protection. Set to `true` only for disposable throwaway sessions after explicit user approval.
 - **`hints`** (object) — optional expensive-model hint tool config. Do not create this by default. Only add it when the user explicitly wants `ask_autoresearch_hint` to call a configured larger pi model for advisory strategy help.
 
 ```json
 {
   "workingDir": "/path/to/project",
   "maxIterations": 50,
-  "maxAutoResumeTurns": 50
+  "maxAutoResumeTurns": 50,
+  "allowNoGit": false
 }
 ```
 
