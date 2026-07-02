@@ -487,10 +487,15 @@ export function shouldAutoActivateAutoresearch(
   ctxCwd: string,
   workDir: string,
   hasPersistedLog: boolean,
-  sessionActivated: boolean = false,
+  recordedDecision: boolean | null = null,
 ): boolean {
   if (!hasPersistedLog) return false;
-  return samePath(ctxCwd, workDir) || sessionActivated;
+  // An explicit `/autoresearch on|off` in this session always wins, so a manual
+  // off survives /tree, compaction, and reloads instead of snapping back on.
+  if (recordedDecision !== null) return recordedDecision;
+  // With no recorded decision, same-cwd sessions default on (a log implies intent);
+  // redirected workingDir sessions default off until this session opts in.
+  return samePath(ctxCwd, workDir);
 }
 
 function autoresearchActivationData(entry: CustomEntry): AutoresearchActivationEntryData | null {
@@ -502,9 +507,9 @@ function autoresearchActivationData(entry: CustomEntry): AutoresearchActivationE
   return data;
 }
 
-function hasActiveAutoresearchActivation(ctx: ExtensionContext, workDir: string): boolean {
+function recordedActivationDecision(ctx: ExtensionContext, workDir: string): boolean | null {
   const canonicalWorkDir = canonicalPath(workDir);
-  let active = false;
+  let decision: boolean | null = null;
 
   for (const entry of ctx.sessionManager.getBranch()) {
     if (entry.type !== "custom") continue;
@@ -512,10 +517,10 @@ function hasActiveAutoresearchActivation(ctx: ExtensionContext, workDir: string)
     const data = autoresearchActivationData(entry);
     if (!data || canonicalPath(data.workDir) !== canonicalWorkDir) continue;
 
-    active = data.active === true;
+    decision = data.active === true;
   }
 
-  return active;
+  return decision;
 }
 
 /**
@@ -1065,9 +1070,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     pi.setActiveTools([...activeTools]);
   };
 
-  const recordAutoresearchActivation = (ctxCwd: string, workDir: string, active: boolean): void => {
-    if (samePath(ctxCwd, workDir)) return;
-
+  const recordAutoresearchActivation = (workDir: string, active: boolean): void => {
     pi.appendEntry(AUTORESEARCH_ACTIVATION_ENTRY, {
       version: 1,
       workDir: canonicalPath(workDir),
@@ -1343,15 +1346,16 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     state.maxExperiments = readMaxExperiments(ctx.cwd);
 
     // Auto-enter autoresearch mode only when a persisted experiment log exists.
-    // Redirected workingDir sessions must also be bound to this pi session;
-    // otherwise unrelated chats launched from a shared cwd would activate it.
+    // A recorded `/autoresearch on|off` in this session wins; otherwise same-cwd
+    // sessions default on and redirected workingDir sessions default off, so
+    // unrelated chats launched from a shared cwd never activate it.
     setAutoresearchMode(
       ctx,
       shouldAutoActivateAutoresearch(
         ctx.cwd,
         workDir,
         hasPersistedLog,
-        hasActiveAutoresearchActivation(ctx, workDir),
+        recordedActivationDecision(ctx, workDir),
       ),
     );
 
@@ -1602,7 +1606,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       }
 
       const wasInactive = !runtime.autoresearchMode;
-      recordAutoresearchActivation(ctx.cwd, workDir, true);
+      recordAutoresearchActivation(workDir, true);
       setAutoresearchMode(ctx, true);
       updateWidget(ctx);
 
@@ -2429,7 +2433,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       const limitReached = state.maxExperiments !== null && segmentCount >= state.maxExperiments;
       if (limitReached) {
         text += `\n\n🛑 Maximum experiments reached (${state.maxExperiments}). STOP the experiment loop now.`;
-        recordAutoresearchActivation(ctx.cwd, workDir, false);
+        recordAutoresearchActivation(workDir, false);
         setAutoresearchMode(ctx, false);
         ctx.abort();
       } else if (runtime.autoresearchMode) {
@@ -2925,7 +2929,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         const wasRunning = !ctx.isIdle();
         const workDir = resolveWorkDir(ctx.cwd);
 
-        recordAutoresearchActivation(ctx.cwd, workDir, false);
+        recordAutoresearchActivation(workDir, false);
         setAutoresearchMode(ctx, false);
         runtime.autoResumeTurns = 0;
         runtime.experimentsThisSession = 0;
@@ -2951,7 +2955,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       if (command === "clear") {
         const workDir = resolveWorkDir(ctx.cwd);
         const jsonlPaths = sessionFileCandidates(workDir, "log");
-        recordAutoresearchActivation(ctx.cwd, workDir, false);
+        recordAutoresearchActivation(workDir, false);
         setAutoresearchMode(ctx, false);
         runtime.autoResumeTurns = 0;
         runtime.experimentsThisSession = 0;
@@ -2992,7 +2996,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       }
 
       const workDir = resolveWorkDir(ctx.cwd);
-      recordAutoresearchActivation(ctx.cwd, workDir, true);
+      recordAutoresearchActivation(workDir, true);
       setAutoresearchMode(ctx, true);
       runtime.autoResumeTurns = 0;
       const rulesLoaded = hasAutoresearchRules(ctx);

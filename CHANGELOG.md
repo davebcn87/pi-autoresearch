@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 
 - Redirected `workingDir` logs no longer auto-activate autoresearch in unrelated pi sessions.
+- `/autoresearch off` now persists across `/tree`, compaction, and reloads: a manual off is recorded as a session activation decision and is no longer overridden just because `log.jsonl` still exists.
 
 ## [1.6.0] - 2026-06-08
 

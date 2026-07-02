@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -156,6 +157,31 @@ async function writeRedirectedSession(cwd, workDir, config = {}) {
   );
 }
 
+async function writeSameCwdLog(cwd) {
+  await mkdir(join(cwd, ".auto"), { recursive: true });
+  await writeFile(
+    join(cwd, ".auto", "log.jsonl"),
+    [
+      JSON.stringify({
+        type: "config",
+        name: "Same-cwd research",
+        metricName: "runtime_ms",
+        metricUnit: "ms",
+        bestDirection: "lower",
+      }),
+      JSON.stringify({
+        run: 1,
+        commit: "abcdef0",
+        metric: 10,
+        metrics: {},
+        status: "crash",
+        description: "baseline",
+        timestamp: Date.now(),
+      }),
+    ].join("\n") + "\n",
+  );
+}
+
 test("same-cwd persisted logs still auto-activate autoresearch", () => {
   assert.equal(
     shouldAutoActivateAutoresearch("/repo", "/repo", true),
@@ -173,6 +199,24 @@ test("missing persisted logs never auto-activate autoresearch", () => {
 test("redirected workingDir logs require a pi-session activation", () => {
   assert.equal(
     shouldAutoActivateAutoresearch("/repo", "/other-worktree", true),
+    false,
+  );
+  assert.equal(
+    shouldAutoActivateAutoresearch("/repo", "/other-worktree", true, true),
+    true,
+  );
+});
+
+test("a recorded manual off keeps same-cwd sessions inactive despite a persisted log", () => {
+  assert.equal(
+    shouldAutoActivateAutoresearch("/repo", "/repo", true, false),
+    false,
+  );
+});
+
+test("a recorded activation reactivates a redirected off decision on later start", () => {
+  assert.equal(
+    shouldAutoActivateAutoresearch("/repo", "/other-worktree", true, false),
     false,
   );
   assert.equal(
@@ -271,6 +315,66 @@ test("starting autoresearch binds redirected workingDir activation to the pi ses
   } finally {
     await rm(cwd, { recursive: true, force: true });
     await rm(workDir, { recursive: true, force: true });
+  }
+});
+
+test("session startup keeps same-cwd sessions inactive when a manual off is recorded", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-cwd-"));
+
+  try {
+    await writeSameCwdLog(cwd);
+
+    const harness = createHarness({
+      cwd,
+      branch: [activationEntry(cwd, false)],
+      initialActiveTools: AUTORESEARCH_TOOLS,
+    });
+    await harness.handlers.get("session_start")({}, harness.ctx);
+
+    assert.deepEqual(harness.activeTools(), []);
+    assert.equal(harness.widgets.at(-1)?.name, "autoresearch");
+    assert.equal(harness.widgets.at(-1)?.widget, undefined);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("/autoresearch off records a manual off decision for same-cwd sessions", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-cwd-"));
+
+  try {
+    await writeSameCwdLog(cwd);
+
+    const harness = createHarness({ cwd, initialActiveTools: AUTORESEARCH_TOOLS });
+    await harness.commands.get("autoresearch").handler("off", harness.ctx);
+
+    assert.deepEqual(harness.activeTools(), []);
+    assert.equal(harness.appendedEntries.length, 1);
+    assert.equal(harness.appendedEntries[0].customType, ACTIVATION_ENTRY);
+    assert.equal(harness.appendedEntries[0].data.active, false);
+    assert.equal(harness.appendedEntries[0].data.workDir, await realpath(cwd));
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("/autoresearch clear turns off, deletes the log, and records a manual off decision", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-cwd-"));
+
+  try {
+    await writeSameCwdLog(cwd);
+
+    const harness = createHarness({ cwd, initialActiveTools: AUTORESEARCH_TOOLS });
+    await harness.commands.get("autoresearch").handler("clear", harness.ctx);
+
+    assert.deepEqual(harness.activeTools(), []);
+    assert.equal(existsSync(join(cwd, ".auto", "log.jsonl")), false);
+    assert.equal(harness.appendedEntries.length, 1);
+    assert.equal(harness.appendedEntries[0].customType, ACTIVATION_ENTRY);
+    assert.equal(harness.appendedEntries[0].data.active, false);
+    assert.equal(harness.appendedEntries[0].data.workDir, await realpath(cwd));
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
   }
 });
 
