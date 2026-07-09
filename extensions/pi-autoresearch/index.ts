@@ -111,6 +111,41 @@ interface ExperimentState {
   confidence: number | null;
 }
 
+export const AUTORESUME_TURN_LIMIT = 200;
+export const CONSECUTIVE_FAILURE_OVERRIDE_LIMIT = 20;
+
+type AutoResumeGuardState = Pick<ExperimentState, "results" | "currentSegment">;
+type AutoResumeGuardRuntime = {
+  autoResumeTurns: number;
+  state: AutoResumeGuardState;
+};
+
+/** Count trailing discard/crash results in the current segment. */
+export function countConsecutiveDiscardOrCrashResults(state: AutoResumeGuardState): number {
+  let count = 0;
+  for (let i = state.results.length - 1; i >= 0; i--) {
+    const result = state.results[i];
+    if (result.segment !== state.currentSegment) break;
+    if (result.status === "discard" || result.status === "crash") {
+      count++;
+      continue;
+    }
+    break;
+  }
+  return count;
+}
+
+export function autoResumeStopReasonFor(runtime: AutoResumeGuardRuntime): string | null {
+  if (runtime.autoResumeTurns >= AUTORESUME_TURN_LIMIT) {
+    return `Autoresearch auto-resume limit reached (${AUTORESUME_TURN_LIMIT} turns)`;
+  }
+  const failures = countConsecutiveDiscardOrCrashResults(runtime.state);
+  if (failures > CONSECUTIVE_FAILURE_OVERRIDE_LIMIT) {
+    return `Autoresearch auto-resume stopped — ${failures} consecutive discards/crashes`;
+  }
+  return null;
+}
+
 interface RunDetails {
   command: string;
   exitCode: number | null;
@@ -1031,14 +1066,6 @@ function renderDashboardLines(
 // ---------------------------------------------------------------------------
 
 export default function autoresearchExtension(pi: ExtensionAPI) {
-  // High ceiling so the loop keeps iterating across long sessions; the
-  // consecutive-failure override below is the real backstop against runaway
-  // discard/crash streaks.
-  const MAX_AUTORESUME_TURNS = 200;
-  // When this many discards or crashes land back-to-back in the current
-  // segment, stop auto-resuming regardless of the turn counter — the agent is
-  // clearly stuck and burning iterations without progress.
-  const MAX_CONSECUTIVE_FAILURES = 20;
   const BENCHMARK_GUARDRAIL =
     "Be careful not to overfit to the benchmarks and do not cheat on the benchmarks.";
 
@@ -1115,7 +1142,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       return;
     }
     if (!isAgentSettled(ctx)) return;
-    const stopReason = autoResumeStopReason(runtime);
+    const stopReason = autoResumeStopReasonFor(runtime);
     if (stopReason !== null) {
       cancelPendingResume(runtime);
       notifyAutoResumeLimitReached(ctx, stopReason);
@@ -1151,37 +1178,6 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
   const shouldAutoResumeAfterCompact = (runtime: AutoresearchRuntime): boolean =>
     runtime.autoresearchMode;
-
-  /** Count trailing discard/crash results in the current segment. */
-  const consecutiveFailures = (state: ExperimentState): number => {
-    let count = 0;
-    for (let i = state.results.length - 1; i >= 0; i--) {
-      const r = state.results[i];
-      if (r.segment !== state.currentSegment) break;
-      if (r.status === "discard" || r.status === "crash") {
-        count++;
-      } else {
-        break;
-      }
-    }
-    return count;
-  };
-
-  // Why a stop reason (not a boolean): the notify message needs to explain
-  // *which* guard tripped — the turn ceiling or the consecutive-failure override.
-  const autoResumeStopReason = (runtime: AutoresearchRuntime): string | null => {
-    if (runtime.autoResumeTurns >= MAX_AUTORESUME_TURNS) {
-      return `Autoresearch auto-resume limit reached (${MAX_AUTORESUME_TURNS} turns)`;
-    }
-    const failures = consecutiveFailures(runtime.state);
-    if (failures > MAX_CONSECUTIVE_FAILURES) {
-      return `Autoresearch auto-resume stopped — ${failures} consecutive discards/crashes`;
-    }
-    return null;
-  };
-
-  const hasReachedAutoResumeLimit = (runtime: AutoresearchRuntime): boolean =>
-    autoResumeStopReason(runtime) !== null;
 
   const notifyAutoResumeLimitReached = (ctx: ExtensionContext, reason?: string | null): void => {
     ctx.ui.notify(reason ?? `Autoresearch auto-resume limit reached`, "info");
@@ -1494,7 +1490,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       return;
     }
     if (!gate(runtime)) return;
-    const stopReason = autoResumeStopReason(runtime);
+    const stopReason = autoResumeStopReasonFor(runtime);
     if (stopReason !== null) {
       notifyAutoResumeLimitReached(ctx, stopReason);
       return;
