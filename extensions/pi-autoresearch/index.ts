@@ -52,6 +52,11 @@ import {
   buildAutoresearchCompactionSummary,
 } from "./compaction.ts";
 import { resolveAutoresearchShortcuts } from "./shortcuts.ts";
+import {
+  lastAssistantError,
+  rateLimitWaitMs,
+  RATE_LIMIT_BUFFER_MS,
+} from "./provider-errors.ts";
 import { sessionFilePath, sessionFileCandidates, ensureParentDir, AUTO_DIR } from "./paths.ts";
 
 // ---------------------------------------------------------------------------
@@ -187,6 +192,8 @@ interface AutoresearchRuntime {
   pendingResumeTimer: ReturnType<typeof setTimeout> | null;
   /** Resume message to send when the pending timer fires. */
   pendingResumeMessage: string | null;
+  /** Delay used when (re)scheduling the pending resume — longer while rate limited. */
+  pendingResumeDelayMs: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -734,6 +741,7 @@ function createSessionRuntime(): AutoresearchRuntime {
     state: createExperimentState(),
     pendingResumeTimer: null,
     pendingResumeMessage: null,
+    pendingResumeDelayMs: null,
   };
 }
 
@@ -1127,6 +1135,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   const cancelPendingResume = (runtime: AutoresearchRuntime): void => {
     pausePendingResume(runtime);
     runtime.pendingResumeMessage = null;
+    runtime.pendingResumeDelayMs = null;
   };
 
   const markAutoResumeSent = (runtime: AutoresearchRuntime): void => {
@@ -1154,18 +1163,30 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     pi.sendUserMessage(message);
   };
 
-  const schedulePendingResume = (ctx: ExtensionContext, runtime: AutoresearchRuntime, message: string): void => {
+  const schedulePendingResume = (
+    ctx: ExtensionContext,
+    runtime: AutoresearchRuntime,
+    message: string,
+    delayMs: number = SETTLED_WINDOW_MS,
+  ): void => {
     pausePendingResume(runtime);
     runtime.pendingResumeMessage = message;
+    runtime.pendingResumeDelayMs = delayMs;
     runtime.pendingResumeTimer = setTimeout(
       () => sendPendingResumeIfReady(ctx, runtime),
-      SETTLED_WINDOW_MS,
+      delayMs,
     );
   };
 
   const reschedulePendingResume = (ctx: ExtensionContext, runtime: AutoresearchRuntime): void => {
     if (!hasPendingResume(runtime)) return;
-    schedulePendingResume(ctx, runtime, runtime.pendingResumeMessage!);
+    // Keep a rate-limit cooldown intact: rescheduling must not shorten the wait.
+    schedulePendingResume(
+      ctx,
+      runtime,
+      runtime.pendingResumeMessage!,
+      runtime.pendingResumeDelayMs ?? SETTLED_WINDOW_MS,
+    );
   };
 
   const hasRunExperimentsThisSession = (runtime: AutoresearchRuntime): boolean =>
@@ -1483,6 +1504,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     ctx: ExtensionContext,
     gate: (runtime: AutoresearchRuntime) => boolean,
     composeMessage: (ctx: ExtensionContext) => string = composeResumeMessage,
+    delayMs: number = SETTLED_WINDOW_MS,
   ): void => {
     const runtime = getRuntime(ctx);
     if (hasPendingResume(runtime)) {
@@ -1495,7 +1517,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       notifyAutoResumeLimitReached(ctx, stopReason);
       return;
     }
-    schedulePendingResume(ctx, runtime, composeMessage(ctx));
+    schedulePendingResume(ctx, runtime, composeMessage(ctx), delayMs);
   };
 
   pi.on("session_before_compact", async (event, ctx) => {
@@ -1507,10 +1529,33 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     ensurePendingResume(ctx, shouldAutoResumeAfterCompact, composeCompactionResumeMessage);
   });
 
-  pi.on("agent_end", async (_event, ctx) => {
+  pi.on("agent_end", async (event, ctx) => {
     const runtime = getRuntime(ctx);
     runtime.runningExperiment = null;
     if (overlayTui) overlayTui.requestRender();
+
+    // A failed turn ends like any other one, so resuming on the settle window
+    // replays the failure immediately. Wait out rate limits; stop on the rest.
+    const error = lastAssistantError(event.messages);
+    if (error !== null) {
+      if (!runtime.autoresearchMode) return;
+      const waitMs = rateLimitWaitMs(error);
+      if (waitMs === null) {
+        ctx.ui.notify(
+          `Autoresearch auto-resume stopped after an agent error: ${error.slice(0, 120)}`,
+          "warning",
+        );
+        return;
+      }
+      const totalWaitMs = waitMs + RATE_LIMIT_BUFFER_MS;
+      ctx.ui.notify(
+        `Rate limited — auto-resume in ${Math.ceil(totalWaitMs / 60_000)}min`,
+        "warning",
+      );
+      ensurePendingResume(ctx, shouldAutoResumeAfterTurn, composeResumeMessage, totalWaitMs);
+      return;
+    }
+
     ensurePendingResume(ctx, shouldAutoResumeAfterTurn);
   });
 

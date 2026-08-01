@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Auto-resume no longer replays failed turns. A turn that ended on a provider rate limit now resumes after the wait parsed from the error (plus a 1 min buffer, defaulting to 30 min when the provider gives no duration), and a turn that ended on any other agent error stops the loop with a notification instead of re-sending the resume message into the same failure.
+
 ## [1.6.2] - 2026-07-09
 
 ### Changed
