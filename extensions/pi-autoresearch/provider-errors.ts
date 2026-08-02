@@ -9,47 +9,36 @@
 
 /** Used when the provider says "rate limited" without saying for how long. */
 export const DEFAULT_RATE_LIMIT_WAIT_MS = 30 * 60_000;
-/** Added to every parsed wait — provider clocks and ours don't agree. */
-export const RATE_LIMIT_BUFFER_MS = 60_000;
+/** Added to every wait — provider clocks and ours don't agree. */
+const BUFFER_MS = 60_000;
 
 interface AssistantMessageLike {
   role?: string;
   stopReason?: string;
   errorMessage?: unknown;
-  content?: unknown;
 }
 
-const WAIT_PATTERNS: Array<{ re: RegExp; ms: number }> = [
-  { re: /(?:try again|retry|wait|reset)[^.\n]{0,40}?(\d+)\s*hours?/i, ms: 3_600_000 },
-  { re: /(?:try again|retry|wait|reset)[^.\n]{0,40}?(\d+)\s*min/i, ms: 60_000 },
-  { re: /retry[-\s]?after[":\s]*(\d+)\s*s(?:ec)?/i, ms: 1000 },
-];
-
 const RATE_LIMITED_RE = /rate.?limit|too many requests|usage limit|quota|429/i;
+const WAIT_RE = /(?:try again|retry|wait|reset)[^.\n]{0,40}?(\d+)\s*(h|m|s)/i;
+const UNIT_MS: Record<string, number> = { h: 3_600_000, m: 60_000, s: 1000 };
 
-/** Wait before resuming after `text`, or null if it isn't a rate limit. */
+/** How long to wait before resuming after `text`, or null if it isn't a rate limit. */
 export function rateLimitWaitMs(text: string): number | null {
   if (!RATE_LIMITED_RE.test(text)) return null;
-  for (const { re, ms } of WAIT_PATTERNS) {
-    const match = text.match(re);
-    if (!match) continue;
-    const value = Number.parseInt(match[1], 10);
-    if (Number.isNaN(value) || value <= 0) continue;
-    return value * ms;
-  }
-  return DEFAULT_RATE_LIMIT_WAIT_MS;
+  const match = text.match(WAIT_RE);
+  const value = match ? Number.parseInt(match[1], 10) : 0;
+  if (match && value > 0) return value * UNIT_MS[match[2].toLowerCase()] + BUFFER_MS;
+  return DEFAULT_RATE_LIMIT_WAIT_MS + BUFFER_MS;
 }
 
 /** Error text of the final assistant message, or null if the turn succeeded. */
-export function lastAssistantError(messages: AssistantMessageLike[] | undefined): string | null {
-  if (!messages) return null;
+export function lastAssistantError(messages: AssistantMessageLike[]): string | null {
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i];
     if (message?.role !== "assistant") continue;
     if (message.stopReason !== "error") return null;
-    return typeof message.errorMessage === "string" && message.errorMessage.length > 0
-      ? message.errorMessage
-      : "Assistant turn failed";
+    const error = message.errorMessage;
+    return typeof error === "string" && error ? error : "Assistant turn failed";
   }
   return null;
 }

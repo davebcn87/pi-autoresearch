@@ -52,11 +52,7 @@ import {
   buildAutoresearchCompactionSummary,
 } from "./compaction.ts";
 import { resolveAutoresearchShortcuts } from "./shortcuts.ts";
-import {
-  lastAssistantError,
-  rateLimitWaitMs,
-  RATE_LIMIT_BUFFER_MS,
-} from "./provider-errors.ts";
+import { lastAssistantError, rateLimitWaitMs } from "./provider-errors.ts";
 import { sessionFilePath, sessionFileCandidates, ensureParentDir, AUTO_DIR } from "./paths.ts";
 
 // ---------------------------------------------------------------------------
@@ -193,7 +189,7 @@ interface AutoresearchRuntime {
   /** Resume message to send when the pending timer fires. */
   pendingResumeMessage: string | null;
   /** Delay used when (re)scheduling the pending resume — longer while rate limited. */
-  pendingResumeDelayMs: number | null;
+  pendingResumeDelayMs: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -730,6 +726,10 @@ function createExperimentState(): ExperimentState {
   };
 }
 
+// Outlasts pi's internal retry (setTimeout 0) and compaction-continue
+// (setTimeout 100); see badlogic/pi-mono#2023, #2110.
+const SETTLED_WINDOW_MS = 800;
+
 function createSessionRuntime(): AutoresearchRuntime {
   return {
     autoresearchMode: false,
@@ -741,7 +741,7 @@ function createSessionRuntime(): AutoresearchRuntime {
     state: createExperimentState(),
     pendingResumeTimer: null,
     pendingResumeMessage: null,
-    pendingResumeDelayMs: null,
+    pendingResumeDelayMs: SETTLED_WINDOW_MS,
   };
 }
 
@@ -1077,9 +1077,6 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   const BENCHMARK_GUARDRAIL =
     "Be careful not to overfit to the benchmarks and do not cheat on the benchmarks.";
 
-  // Outlasts pi's internal retry (setTimeout 0) and compaction-continue
-  // (setTimeout 100); see badlogic/pi-mono#2023, #2110.
-  const SETTLED_WINDOW_MS = 800;
   const shortcuts = resolveAutoresearchShortcuts();
 
   const dashboardHintVariants = (): string[] => {
@@ -1135,7 +1132,6 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   const cancelPendingResume = (runtime: AutoresearchRuntime): void => {
     pausePendingResume(runtime);
     runtime.pendingResumeMessage = null;
-    runtime.pendingResumeDelayMs = null;
   };
 
   const markAutoResumeSent = (runtime: AutoresearchRuntime): void => {
@@ -1181,12 +1177,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   const reschedulePendingResume = (ctx: ExtensionContext, runtime: AutoresearchRuntime): void => {
     if (!hasPendingResume(runtime)) return;
     // Keep a rate-limit cooldown intact: rescheduling must not shorten the wait.
-    schedulePendingResume(
-      ctx,
-      runtime,
-      runtime.pendingResumeMessage!,
-      runtime.pendingResumeDelayMs ?? SETTLED_WINDOW_MS,
-    );
+    schedulePendingResume(ctx, runtime, runtime.pendingResumeMessage!, runtime.pendingResumeDelayMs);
   };
 
   const hasRunExperimentsThisSession = (runtime: AutoresearchRuntime): boolean =>
@@ -1504,7 +1495,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     ctx: ExtensionContext,
     gate: (runtime: AutoresearchRuntime) => boolean,
     composeMessage: (ctx: ExtensionContext) => string = composeResumeMessage,
-    delayMs: number = SETTLED_WINDOW_MS,
+    delayMs?: number,
   ): void => {
     const runtime = getRuntime(ctx);
     if (hasPendingResume(runtime)) {
@@ -1547,12 +1538,11 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         );
         return;
       }
-      const totalWaitMs = waitMs + RATE_LIMIT_BUFFER_MS;
       ctx.ui.notify(
-        `Rate limited — auto-resume in ${Math.ceil(totalWaitMs / 60_000)}min`,
+        `Rate limited — auto-resume in ${Math.ceil(waitMs / 60_000)}min`,
         "warning",
       );
-      ensurePendingResume(ctx, shouldAutoResumeAfterTurn, composeResumeMessage, totalWaitMs);
+      ensurePendingResume(ctx, shouldAutoResumeAfterTurn, composeResumeMessage, waitMs);
       return;
     }
 
