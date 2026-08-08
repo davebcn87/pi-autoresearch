@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- `freshContextPerIteration` config flag (default `false`). When enabled, autoresearch starts a genuinely fresh pi session after every experiment instead of relying on in-session compaction: the auto-resume choke point queues a new `/autoresearch-next` command whose handler calls `ctx.newSession(...)`, and the replacement session rehydrates all state from `.auto/*` + `git log` via `session_start`. Each experiment gets a clean model context; the filesystem is the sole memory between experiments. `maxIterations` and the consecutive-discard/crash stop still gate the handoff. `/autoresearch-next` can also be invoked manually to force a fresh iteration.
+
 ## [1.6.2] - 2026-07-09
 
 ### Changed

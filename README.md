@@ -208,7 +208,8 @@ Create `.auto/config.json` in your pi session directory to customize behavior:
 ```json
 {
   "workingDir": "/path/to/project",
-  "maxIterations": 50
+  "maxIterations": 50,
+  "freshContextPerIteration": false
 }
 ```
 
@@ -216,10 +217,17 @@ Create `.auto/config.json` in your pi session directory to customize behavior:
 |-------|------|-------------|
 | `workingDir` | string | Override the directory for all autoresearch operations — file I/O, command execution, and git. Supports absolute or relative paths (resolved against the pi session cwd). The config file itself always stays under the session cwd. Fails if the directory doesn't exist. |
 | `maxIterations` | number | Maximum experiments before auto-stopping. The agent is told to stop and won't run more experiments until a new segment is initialized. |
+| `freshContextPerIteration` | boolean | Start a fresh pi session after every experiment instead of relying on in-session compaction. Each iteration gets a clean model context and rehydrates state from `.auto/*` + `git log`. Default `false`. See [Long-running loops and context](#long-running-loops-and-context). |
 
 ### Long-running loops and context
 
 The loop is designed to run unattended across context limits. When pi's [auto-compaction](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/compaction.md) summarizes the older portion of the conversation, autoresearch detects the resulting idle and re-prompts the agent to re-read `.auto/prompt.md`, the tail of `.auto/log.jsonl`, `.auto/ideas.md`, and `git log` before continuing. All progress is persisted in those files, so the post-summary turn rehydrates from the source of truth instead of relying on whatever survived compaction. No tuning required — if pi's auto-compaction is enabled (the default), this just works.
+
+By default, isolation between experiments relies on that compaction/re-prompt cycle within a **single** pi session, so conversational assumptions from experiment N can still bias experiment N+15.
+
+Set **`freshContextPerIteration: true`** to instead start a genuinely fresh pi session after every experiment. When enabled, the auto-resume choke point queues the `/autoresearch-next` command; its handler waits for idle, then calls `ctx.newSession(...)`, tearing down the current session and kicking off a replacement. The replacement session has **no conversation history** and rehydrates entirely from disk — `.auto/prompt.md`, the tail of `.auto/log.jsonl` (which also re-enables autoresearch mode and the gated tools via `session_start`), `.auto/ideas.md`, and `git log` — then runs exactly one experiment. The filesystem becomes the sole memory between experiments, which forces `.auto/*` to actually be sufficient and gives each experiment a clean model context.
+
+Safety under `freshContextPerIteration`: `maxIterations` and the consecutive-discard/crash stop (both read from the persisted `.auto/log.jsonl`) still gate the handoff, so a saturated or runaway loop still stops. The 200-turn auto-resume ceiling is per-session and effectively resets each iteration (each fresh session runs ~one turn), so rely on `maxIterations` for a hard cap. Default is `false`. You can also invoke `/autoresearch-next` manually to force a fresh iteration.
 
 ---
 

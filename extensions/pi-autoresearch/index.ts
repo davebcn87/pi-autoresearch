@@ -464,6 +464,8 @@ function currentResults(results: ExperimentResult[], segment: number): Experimen
 interface AutoresearchConfig {
   maxIterations?: number;
   workingDir?: string;
+  /** Start a fresh pi session after each experiment instead of compacting in place (default: false). */
+  freshContextPerIteration?: boolean;
 }
 
 /** Read the config file (.auto/config.json, legacy autoresearch.config.json) from the given directory (always ctx.cwd) */
@@ -483,6 +485,16 @@ function readMaxExperiments(cwd: string): number | null {
   return (typeof config.maxIterations === "number" && config.maxIterations > 0)
     ? Math.floor(config.maxIterations)
     : null;
+}
+
+/**
+ * Read `freshContextPerIteration` from the config file (default: false).
+ * When true, autoresearch starts a fresh pi session after every experiment
+ * instead of relying on in-session compaction, so each iteration gets a clean
+ * model context and rehydrates state from `.auto/*` + git.
+ */
+export function readFreshContextPerIteration(cwd: string): boolean {
+  return readConfig(cwd).freshContextPerIteration === true;
 }
 
 /**
@@ -1151,7 +1163,15 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
     cancelPendingResume(runtime);
     markAutoResumeSent(runtime);
-    pi.sendUserMessage(message);
+    // Fresh-context mode: hand off to a brand-new session instead of prompting
+    // in place. newSession() must run from a command handler, so queue the
+    // /autoresearch-next command; its handler tears down this session and kicks
+    // off the replacement, which rehydrates state from .auto/* + git.
+    if (readFreshContextPerIteration(ctx.cwd)) {
+      pi.sendUserMessage("/autoresearch-next");
+    } else {
+      pi.sendUserMessage(message);
+    }
   };
 
   const schedulePendingResume = (ctx: ExtensionContext, runtime: AutoresearchRuntime, message: string): void => {
@@ -1198,6 +1218,20 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       "Run the next iteration now.",
       "Pick the most promising hypothesis from the ideas backlog or the latest `next:` hints in recent runs, then call run_experiment + log_experiment.",
       "Do not re-read .auto/prompt.md or .auto/log.jsonl — the compaction summary already contains them.",
+      BENCHMARK_GUARDRAIL,
+    ].join(" ");
+  };
+
+  // Fresh-context handoff kickoff. Unlike the compaction resume, the
+  // replacement session has NO history and NO compaction summary, so it must
+  // rehydrate everything from disk itself.
+  const composeFreshSessionResumeMessage = (_ctx: ExtensionContext): string => {
+    return [
+      "Run the next autoresearch iteration in a fresh session.",
+      "You have NO conversation history from previous experiments — rehydrate all state from disk first:",
+      "read .auto/prompt.md (experiment rules), the tail of .auto/log.jsonl (config header + recent results), .auto/ideas.md if present, and recent git log.",
+      "Then pick the single most promising hypothesis and run exactly one experiment: call run_experiment + log_experiment.",
+      "Do not call init_experiment — the loop is already initialized.",
       BENCHMARK_GUARDRAIL,
     ].join(" ");
   };
@@ -3062,6 +3096,35 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       // must stay `/skill:...`-prefixed for command expansion.
       const message = activationSteer && rulesLoaded ? `${activationSteer}\n\n${kickoff}` : kickoff;
       sendWhenReady(ctx, message);
+    },
+  });
+
+  // -----------------------------------------------------------------------
+  // /autoresearch-next — fresh-context handoff between experiments.
+  //
+  // newSession() may only be called from a command handler (calling it from a
+  // timer/event callback can deadlock), so when freshContextPerIteration is
+  // enabled the auto-resume choke point queues this command instead of
+  // prompting in place. The current session is torn down and the replacement
+  // session rehydrates all state from .auto/* + git via session_start, giving
+  // each experiment a clean model context. Also invokable manually to force a
+  // fresh iteration.
+  // -----------------------------------------------------------------------
+  pi.registerCommand("autoresearch-next", {
+    description: "Start a fresh session and run the next autoresearch iteration",
+    handler: async (_args, ctx) => {
+      if (!getRuntime(ctx).autoresearchMode) return;
+      // Fully settle first: waits out retries, compaction-continues, queued msgs.
+      await ctx.waitForIdle();
+      const kickoff = composeFreshSessionResumeMessage(ctx);
+      const parentSession = ctx.sessionManager.getSessionFile();
+      await ctx.newSession({
+        parentSession,
+        withSession: async (freshCtx) => {
+          // Only the replacement-session ctx is valid here; old pi/ctx are stale.
+          await freshCtx.sendUserMessage(kickoff);
+        },
+      });
     },
   });
 }
