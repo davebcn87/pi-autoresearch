@@ -1067,7 +1067,7 @@ function renderDashboardLines(
 
 export default function autoresearchExtension(pi: ExtensionAPI) {
   const BENCHMARK_GUARDRAIL =
-    "Be careful not to overfit to the benchmarks and do not cheat on the benchmarks.";
+    "Be careful not to overfit to the benchmarks and do not cheat on the benchmarks. Your changes will be judged against a hidden holdout benchmark.";
 
   // Outlasts pi's internal retry (setTimeout 0) and compaction-continue
   // (setTimeout 100); see badlogic/pi-mono#2023, #2110.
