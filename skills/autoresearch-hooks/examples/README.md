@@ -18,6 +18,7 @@ For the hook contract (stdin schemas, stdout handling, timeouts, observability),
 | Script | Purpose |
 | --- | --- |
 | [`external-search.sh`](before/external-search.sh) | Mine agent notes for a query and fetch external material via your search tool of choice. |
+| [`xquik-search.sh`](before/xquik-search.sh) | Search public X posts with the Xquik CLI and save them as untrusted research. |
 | [`qmd-search.sh`](before/qmd-search.sh) | Same shape, but targets a local [`qmd`](https://www.npmjs.com/package/qmd) BM25 / vector / rerank index over your project's markdown. |
 | [`anti-thrash.sh`](before/anti-thrash.sh) | After N consecutive discards, emit a steer suggesting a structural rethink. |
 | [`idea-rotator.sh`](before/idea-rotator.sh) | Surface the next unchecked bullet from `.auto/ideas.md` as a steer nudge. |
@@ -31,6 +32,19 @@ For the hook contract (stdin schemas, stdout handling, timeouts, observability),
 | [`learnings-journal.sh`](after/learnings-journal.sh) | Append one human-readable line per run to `.auto/learnings.md`. |
 | [`macos-notify.sh`](after/macos-notify.sh) | Fire a native macOS banner only when the run is a new best. |
 | [`auto-tag-winners.sh`](after/auto-tag-winners.sh) | Tag every new best with a sortable git tag. |
+
+### X search setup
+
+Install the [Xquik CLI](https://docs.xquik.com/sdks/cli), then export an API key:
+
+```bash
+go install 'github.com/Xquik-dev/x-twitter-scraper-cli/cmd/x-twitter-scraper@latest'
+export X_TWITTER_SCRAPER_API_KEY="xq_YOUR_KEY_HERE"
+```
+
+Each changed query can consume up to 5 Xquik credits. The hook skips unchanged queries, never enables debug output, and preserves the last successful result when a request fails. Posts are external, untrusted evidence.
+
+Xquik is an independent third-party service. Not affiliated with X Corp.
 
 ## Style conventions
 

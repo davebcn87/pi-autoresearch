@@ -108,7 +108,7 @@ One JSON line. Parse with `jq`. Realistic example:
 
 Runnable reference scripts live in this skill's `examples/` directory — one file per pattern. Paths are resolved against the skill directory (parent of SKILL.md). Browse them for inspiration; they're not policy.
 
-- `examples/before/` — external search, qmd document search, anti-thrash, idea rotator, hypothesis reflection, context rotation
+- `examples/before/` — external web and X search, qmd document search, anti-thrash, idea rotator, hypothesis reflection, context rotation
 - `examples/after/` — learnings journal, macOS notification on new best, auto-tag winning commits
 
 Each example is a complete, self-contained script with named constants, short helper functions, guard clauses, and intention-revealing names. Read the header comment for its purpose, copy to `.auto/hooks/<stage>.sh`, adapt.
@@ -157,6 +157,8 @@ Each example is a complete, self-contained script with named constants, short he
    For `after.sh`, swap `last_run: null` for a `run_entry` object (see the schema above).
 
 6. **Commit the hook** alongside other session files. It's preserved across reverts because it lives under `.auto/`.
+
+For `xquik-search.sh`, explain that each changed query can consume up to 5 Xquik credits. The example skips an unchanged query and writes posts as untrusted evidence.
 
 ---
 
