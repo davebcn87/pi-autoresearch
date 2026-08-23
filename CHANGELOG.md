@@ -3,6 +3,8 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+### Fixed
+- Avoid shortcut clash with pi's built-in TUI search by changing the fullscreen dashboard default from `ctrl+shift+f` to `ctrl+shift+d`.
 
 ## [1.6.2] - 2026-07-09
 

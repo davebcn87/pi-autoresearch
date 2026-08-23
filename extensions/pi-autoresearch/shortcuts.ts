@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
-export const DEFAULT_FULLSCREEN_DASHBOARD_SHORTCUT = "ctrl+shift+f";
+export const DEFAULT_FULLSCREEN_DASHBOARD_SHORTCUT = "ctrl+shift+d";
 
 const CONFIG_FILE_NAME = "pi-autoresearch.json";
 
