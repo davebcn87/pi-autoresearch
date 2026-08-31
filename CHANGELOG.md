@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** no keyboard shortcuts are bound by default anymore. The fullscreen dashboard default chord `ctrl+shift+f` collided with pi 0.84.2's new built-in transcript search (#86) — and any hardcoded default will eventually collide with a future pi built-in. Shortcuts are now strictly opt-in via `<agent-dir>/extensions/pi-autoresearch.json`. To restore the old behavior: `{ "shortcuts": { "fullscreenDashboard": "ctrl+shift+f" } }`.
+
+### Added
+
+- `/autoresearch dashboard` subcommand opens the fullscreen dashboard overlay — the keyboard-free way to reach it.
+- The `export` (`/autoresearch export`) and `off` (`/autoresearch off`) actions can now be bound to opt-in shortcuts alongside `fullscreenDashboard`.
+- README guidance (aimed at agents) for verifying a chord against the installed pi's built-in keymap before writing it to the shortcut config.
+
 ## [1.6.2] - 2026-07-09
 
 ### Changed

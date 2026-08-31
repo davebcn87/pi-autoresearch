@@ -1,18 +1,31 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import type { KeyId } from "@earendil-works/pi-tui";
 
-export const DEFAULT_FULLSCREEN_DASHBOARD_SHORTCUT = "ctrl+shift+f";
+// No shortcut is bound by default: pi's built-in keymap grows over time and
+// any hardcoded chord eventually collides with it (see issue #86). Every
+// action is reachable through /autoresearch subcommands; chords are opt-in.
+export const SHORTCUT_ACTIONS = ["fullscreenDashboard", "export", "off"] as const;
+
+export type ShortcutAction = (typeof SHORTCUT_ACTIONS)[number];
+
+export type AutoresearchShortcuts = Record<ShortcutAction, KeyId | null>;
+
+type AutoresearchShortcutConfig = Partial<Record<ShortcutAction, KeyId | null>>;
 
 const CONFIG_FILE_NAME = "pi-autoresearch.json";
-
-export interface AutoresearchShortcuts {
-  fullscreenDashboard: string | null;
-}
-
-interface AutoresearchShortcutConfig {
-  fullscreenDashboard?: unknown;
-}
+const SHORTCUT_MODIFIERS = ["ctrl", "shift", "alt", "super"] as const;
+const SHORTCUT_KEYS = new Set([
+  ..."abcdefghijklmnopqrstuvwxyz0123456789",
+  "escape", "esc", "enter", "return", "tab", "space", "backspace",
+  "delete", "insert", "clear", "home", "end", "pageup", "pagedown",
+  "up", "down", "left", "right",
+  ...Array.from({ length: 12 }, (_, index) => `f${index + 1}`),
+  "`", "-", "=", "[", "]", "\\", ";", "'", ",", ".", "/", "!",
+  "@", "#", "$", "%", "^", "&", "*", "(", ")", "_", "+", "|",
+  "~", "{", "}", ":", "<", ">", "?",
+]);
 
 export function autoresearchShortcutsConfigPath(agentDir: string = getAgentDir()): string {
   return join(agentDir, "extensions", CONFIG_FILE_NAME);
@@ -30,12 +43,7 @@ export function resolveAutoresearchShortcuts(
     return defaultAutoresearchShortcuts();
   }
 
-  return {
-    fullscreenDashboard: shortcutFromConfig(
-      config.fullscreenDashboard,
-      DEFAULT_FULLSCREEN_DASHBOARD_SHORTCUT
-    ),
-  };
+  return shortcutsFromConfig(config);
 }
 
 function readShortcutConfig(configPath: string): AutoresearchShortcutConfig | null {
@@ -57,33 +65,56 @@ function readShortcutConfig(configPath: string): AutoresearchShortcutConfig | nu
     return null;
   }
 
-  return shortcuts;
+  return shortcuts as AutoresearchShortcutConfig;
 }
 
 function hasValidShortcutValues(shortcuts: Record<string, unknown>): boolean {
-  return isValidShortcutConfigValue(shortcuts.fullscreenDashboard);
+  return SHORTCUT_ACTIONS.every((action) => isValidShortcutConfigValue(shortcuts[action]));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isValidShortcutConfigValue(value: unknown): value is string | null | undefined {
-  return (
-    value === undefined ||
-    value === null ||
-    (typeof value === "string" && value !== "")
-  );
+function isValidShortcutConfigValue(value: unknown): value is KeyId | null | undefined {
+  return value === undefined || value === null || isValidShortcut(value);
 }
 
-function shortcutFromConfig(configured: unknown, fallback: string): string | null {
-  if (configured === null) return null;
-  return typeof configured === "string" ? configured : fallback;
+function isValidShortcut(value: unknown): value is KeyId {
+  if (typeof value !== "string" || value === "") return false;
+
+  let key = value.toLowerCase();
+  const modifiers = new Set<string>();
+  while (true) {
+    const modifier = shortcutModifierPrefix(key);
+    if (!modifier) break;
+    if (modifiers.has(modifier)) return false;
+    modifiers.add(modifier);
+    key = key.slice(modifier.length + 1);
+  }
+  return SHORTCUT_KEYS.has(key);
+}
+
+function shortcutModifierPrefix(value: string): string | null {
+  return SHORTCUT_MODIFIERS.find((modifier) => value.startsWith(`${modifier}+`)) ?? null;
+}
+
+function shortcutsFromConfig(config: AutoresearchShortcutConfig): AutoresearchShortcuts {
+  const shortcuts = defaultAutoresearchShortcuts();
+  for (const action of SHORTCUT_ACTIONS) {
+    const configured = config[action];
+    if (typeof configured === "string") {
+      shortcuts[action] = configured;
+    }
+  }
+  return shortcuts;
 }
 
 function defaultAutoresearchShortcuts(): AutoresearchShortcuts {
   return {
-    fullscreenDashboard: DEFAULT_FULLSCREEN_DASHBOARD_SHORTCUT,
+    fullscreenDashboard: null,
+    export: null,
+    off: null,
   };
 }
 
