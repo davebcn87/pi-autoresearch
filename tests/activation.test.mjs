@@ -47,6 +47,7 @@ function createHarness({ cwd, branch = [], initialActiveTools = [] }) {
 
   const ctx = {
     cwd,
+    mode: "tui",
     hasUI: true,
     isIdle: () => true,
     hasPendingMessages: () => false,
@@ -353,6 +354,22 @@ test("/autoresearch off records a manual off decision for same-cwd sessions", as
     assert.equal(harness.appendedEntries[0].customType, ACTIVATION_ENTRY);
     assert.equal(harness.appendedEntries[0].data.active, false);
     assert.equal(harness.appendedEntries[0].data.workDir, await realpath(cwd));
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("/autoresearch dashboard explains that the overlay requires TUI mode", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-cwd-"));
+
+  try {
+    const harness = createHarness({ cwd });
+    harness.ctx.mode = "rpc";
+
+    await harness.commands.get("autoresearch").handler("dashboard", harness.ctx);
+
+    assert.equal(harness.notifications.length, 1);
+    assert.match(harness.notifications[0].message, /only available in TUI mode/i);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }

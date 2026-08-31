@@ -153,6 +153,32 @@ test("invalid known shortcut fields warn and fall back to defaults for the whole
   }
 });
 
+test("invalid shortcut chords warn instead of registering a dead binding", async () => {
+  const agentDir = await mkdtemp(join(tmpdir(), "pi-autoresearch-test-"));
+  const warnings = [];
+  const previousWarn = console.warn;
+  console.warn = (message) => warnings.push(String(message));
+  try {
+    const configPath = autoresearchShortcutsConfigPath(agentDir);
+    await mkdir(join(agentDir, "extensions"), { recursive: true });
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        shortcuts: {
+          fullscreenDashboard: "ctrl+shift+",
+        },
+      })
+    );
+
+    assert.deepEqual(resolveAutoresearchShortcuts(configPath), UNBOUND_DEFAULTS);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /invalid pi-autoresearch config/i);
+  } finally {
+    console.warn = previousWarn;
+    await rm(agentDir, { recursive: true, force: true });
+  }
+});
+
 function withAgentDir(agentDir, fn) {
   const previous = process.env.PI_CODING_AGENT_DIR;
   try {

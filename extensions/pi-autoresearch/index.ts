@@ -22,7 +22,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { truncateTail, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { Text, truncateToWidth, matchesKey, visibleWidth, type KeyId } from "@earendil-works/pi-tui";
+import { Text, truncateToWidth, matchesKey, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -2576,7 +2576,17 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   // Fullscreen scrollable dashboard overlay
   // -----------------------------------------------------------------------
 
+  function canOpenFullscreenDashboard(ctx: ExtensionContext): boolean {
+    const mode = (ctx as ExtensionContext & { mode?: string }).mode;
+    return mode === undefined ? ctx.hasUI : mode === "tui";
+  }
+
   async function openFullscreenDashboard(ctx: ExtensionContext): Promise<void> {
+    if (!canOpenFullscreenDashboard(ctx)) {
+      ctx.ui.notify("The fullscreen dashboard is only available in TUI mode", "info");
+      return;
+    }
+
     const runtime = getRuntime(ctx);
     const state = runtime.state;
     if (!runtime.autoresearchMode) {
@@ -2743,8 +2753,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
   for (const action of SHORTCUT_ACTIONS) {
     const chord = shortcuts[action];
-    // Config values are arbitrary user strings; pi validates chords at registration.
-    if (chord) pi.registerShortcut(chord as KeyId, shortcutActions[action]);
+    if (chord) pi.registerShortcut(chord, shortcutActions[action]);
   }
 
   // -----------------------------------------------------------------------

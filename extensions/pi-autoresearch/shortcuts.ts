@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import type { KeyId } from "@earendil-works/pi-tui";
 
 // No shortcut is bound by default: pi's built-in keymap grows over time and
 // any hardcoded chord eventually collides with it (see issue #86). Every
@@ -9,9 +10,22 @@ export const SHORTCUT_ACTIONS = ["fullscreenDashboard", "export", "off"] as cons
 
 export type ShortcutAction = (typeof SHORTCUT_ACTIONS)[number];
 
-export type AutoresearchShortcuts = Record<ShortcutAction, string | null>;
+export type AutoresearchShortcuts = Record<ShortcutAction, KeyId | null>;
+
+type AutoresearchShortcutConfig = Partial<Record<ShortcutAction, KeyId | null>>;
 
 const CONFIG_FILE_NAME = "pi-autoresearch.json";
+const SHORTCUT_MODIFIERS = ["ctrl", "shift", "alt", "super"] as const;
+const SHORTCUT_KEYS = new Set([
+  ..."abcdefghijklmnopqrstuvwxyz0123456789",
+  "escape", "esc", "enter", "return", "tab", "space", "backspace",
+  "delete", "insert", "clear", "home", "end", "pageup", "pagedown",
+  "up", "down", "left", "right",
+  ...Array.from({ length: 12 }, (_, index) => `f${index + 1}`),
+  "`", "-", "=", "[", "]", "\\", ";", "'", ",", ".", "/", "!",
+  "@", "#", "$", "%", "^", "&", "*", "(", ")", "_", "+", "|",
+  "~", "{", "}", ":", "<", ">", "?",
+]);
 
 export function autoresearchShortcutsConfigPath(agentDir: string = getAgentDir()): string {
   return join(agentDir, "extensions", CONFIG_FILE_NAME);
@@ -32,7 +46,7 @@ export function resolveAutoresearchShortcuts(
   return shortcutsFromConfig(config);
 }
 
-function readShortcutConfig(configPath: string): Record<string, unknown> | null {
+function readShortcutConfig(configPath: string): AutoresearchShortcutConfig | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(readFileSync(configPath, "utf-8"));
@@ -51,7 +65,7 @@ function readShortcutConfig(configPath: string): Record<string, unknown> | null 
     return null;
   }
 
-  return shortcuts;
+  return shortcuts as AutoresearchShortcutConfig;
 }
 
 function hasValidShortcutValues(shortcuts: Record<string, unknown>): boolean {
@@ -62,15 +76,30 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isValidShortcutConfigValue(value: unknown): value is string | null | undefined {
-  return (
-    value === undefined ||
-    value === null ||
-    (typeof value === "string" && value !== "")
-  );
+function isValidShortcutConfigValue(value: unknown): value is KeyId | null | undefined {
+  return value === undefined || value === null || isValidShortcut(value);
 }
 
-function shortcutsFromConfig(config: Record<string, unknown>): AutoresearchShortcuts {
+function isValidShortcut(value: unknown): value is KeyId {
+  if (typeof value !== "string" || value === "") return false;
+
+  let key = value.toLowerCase();
+  const modifiers = new Set<string>();
+  while (true) {
+    const modifier = shortcutModifierPrefix(key);
+    if (!modifier) break;
+    if (modifiers.has(modifier)) return false;
+    modifiers.add(modifier);
+    key = key.slice(modifier.length + 1);
+  }
+  return SHORTCUT_KEYS.has(key);
+}
+
+function shortcutModifierPrefix(value: string): string | null {
+  return SHORTCUT_MODIFIERS.find((modifier) => value.startsWith(`${modifier}+`)) ?? null;
+}
+
+function shortcutsFromConfig(config: AutoresearchShortcutConfig): AutoresearchShortcuts {
   const shortcuts = defaultAutoresearchShortcuts();
   for (const action of SHORTCUT_ACTIONS) {
     const configured = config[action];

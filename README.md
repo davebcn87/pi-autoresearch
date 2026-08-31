@@ -87,9 +87,29 @@ Each key binds its `/autoresearch` subcommand: `fullscreenDashboard` → `dashbo
 
 Pick a chord that's free in [pi's built-in keybindings](https://github.com/badlogic/pi-mono/blob/main/docs/keybindings.md)
 and your `<agent-dir>/keybindings.json` — extension shortcuts win conflicts, so a
-clashing chord hijacks the built-in action. `ctrl+shift+y`, `ctrl+shift+u`,
-`alt+shift+f`, and `ctrl+alt+d` are free as of pi 0.84.x. After `/reload`, confirm
-pi shows no `Extension shortcut conflict` warning.
+clashing chord hijacks the built-in action.
+
+#### Picking a free chord (guidance for agents)
+
+Don't guess a chord — check it against the installed pi's built-in keymap first:
+
+```bash
+PI_ROOT=$(ls -d ~/.pi/pkg/pi-* 2>/dev/null | sort -V | tail -1)
+[ -n "$PI_ROOT" ] || PI_ROOT="$(npm root -g)/@earendil-works/pi-coding-agent"
+node --input-type=module -e '
+const { KEYBINDINGS } = await import(process.argv[1] + "/dist/core/keybindings.js");
+const taken = new Set(Object.values(KEYBINDINGS).flatMap(({ defaultKeys }) => defaultKeys).map((key) => key.toLowerCase()));
+console.log(taken.has(process.argv[2].toLowerCase()) ? "TAKEN" : "FREE");
+' "$PI_ROOT" ctrl+shift+y
+```
+
+Chords in `<agent-dir>/keybindings.json` values are also taken. Write a
+verified-free chord into `<agent-dir>/extensions/pi-autoresearch.json`, then
+`/reload` pi and confirm no `Extension shortcut conflict` warning appears.
+
+`ctrl+shift+y`, `ctrl+shift+u`, `alt+shift+f`, and `ctrl+alt+d` are free as of
+pi 0.84.x. Always re-verify — pi's keymap grows over time, which is why this
+extension binds nothing by default.
 
 ### UI
 
