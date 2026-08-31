@@ -6,25 +6,35 @@ import test from "node:test";
 
 import {
   autoresearchShortcutsConfigPath,
-  DEFAULT_FULLSCREEN_DASHBOARD_SHORTCUT,
   resolveAutoresearchShortcuts,
+  SHORTCUT_ACTIONS,
 } from "../extensions/pi-autoresearch/shortcuts.ts";
 import autoresearchExtension from "../extensions/pi-autoresearch/index.ts";
 
-test("autoresearch shortcuts default to the documented bindings when config is absent", async () => {
+const UNBOUND_DEFAULTS = {
+  fullscreenDashboard: null,
+  export: null,
+  off: null,
+};
+
+test("no shortcuts are bound by default", async () => {
   const agentDir = await mkdtemp(join(tmpdir(), "pi-autoresearch-test-"));
   try {
     const configPath = autoresearchShortcutsConfigPath(agentDir);
     const shortcuts = resolveAutoresearchShortcuts(configPath);
 
     assert.equal(configPath, join(agentDir, "extensions", "pi-autoresearch.json"));
-    assert.equal(shortcuts.fullscreenDashboard, DEFAULT_FULLSCREEN_DASHBOARD_SHORTCUT);
+    assert.deepEqual(shortcuts, UNBOUND_DEFAULTS);
   } finally {
     await rm(agentDir, { recursive: true, force: true });
   }
 });
 
-test("autoresearch shortcuts can be overridden by the config file", async () => {
+test("shortcut actions cover every configurable command", () => {
+  assert.deepEqual([...SHORTCUT_ACTIONS], ["fullscreenDashboard", "export", "off"]);
+});
+
+test("shortcuts can be opted into via the config file", async () => {
   const agentDir = await mkdtemp(join(tmpdir(), "pi-autoresearch-test-"));
   try {
     const configPath = autoresearchShortcutsConfigPath(agentDir);
@@ -34,19 +44,24 @@ test("autoresearch shortcuts can be overridden by the config file", async () => 
       JSON.stringify({
         shortcuts: {
           fullscreenDashboard: "ctrl+shift+u",
+          export: "alt+shift+e",
         },
       })
     );
 
     const shortcuts = resolveAutoresearchShortcuts(configPath);
 
-    assert.equal(shortcuts.fullscreenDashboard, "ctrl+shift+u");
+    assert.deepEqual(shortcuts, {
+      fullscreenDashboard: "ctrl+shift+u",
+      export: "alt+shift+e",
+      off: null,
+    });
   } finally {
     await rm(agentDir, { recursive: true, force: true });
   }
 });
 
-test("autoresearch shortcuts can be disabled with null in the config file", async () => {
+test("explicit null in the config file keeps a shortcut unbound", async () => {
   const agentDir = await mkdtemp(join(tmpdir(), "pi-autoresearch-test-"));
   try {
     const configPath = autoresearchShortcutsConfigPath(agentDir);
@@ -68,7 +83,7 @@ test("autoresearch shortcuts can be disabled with null in the config file", asyn
   }
 });
 
-test("partial shortcut config defaults omitted fields independently", async () => {
+test("empty shortcut config leaves every action unbound", async () => {
   const agentDir = await mkdtemp(join(tmpdir(), "pi-autoresearch-test-"));
   try {
     const configPath = autoresearchShortcutsConfigPath(agentDir);
@@ -82,7 +97,7 @@ test("partial shortcut config defaults omitted fields independently", async () =
 
     const shortcuts = resolveAutoresearchShortcuts(configPath);
 
-    assert.equal(shortcuts.fullscreenDashboard, DEFAULT_FULLSCREEN_DASHBOARD_SHORTCUT);
+    assert.deepEqual(shortcuts, UNBOUND_DEFAULTS);
   } finally {
     await rm(agentDir, { recursive: true, force: true });
   }
@@ -100,9 +115,7 @@ test("malformed shortcut config warns and falls back to defaults", async () => {
 
     const shortcuts = resolveAutoresearchShortcuts(configPath);
 
-    assert.deepEqual(shortcuts, {
-      fullscreenDashboard: DEFAULT_FULLSCREEN_DASHBOARD_SHORTCUT,
-    });
+    assert.deepEqual(shortcuts, UNBOUND_DEFAULTS);
     assert.equal(warnings.length, 1);
     assert.match(warnings[0], /pi-autoresearch.*config/i);
     assert.match(warnings[0], new RegExp(configPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
@@ -131,9 +144,7 @@ test("invalid known shortcut fields warn and fall back to defaults for the whole
 
     const shortcuts = resolveAutoresearchShortcuts(configPath);
 
-    assert.deepEqual(shortcuts, {
-      fullscreenDashboard: DEFAULT_FULLSCREEN_DASHBOARD_SHORTCUT,
-    });
+    assert.deepEqual(shortcuts, UNBOUND_DEFAULTS);
     assert.equal(warnings.length, 1);
     assert.match(warnings[0], /invalid pi-autoresearch config/i);
   } finally {
@@ -166,7 +177,18 @@ function collectRegisteredShortcuts() {
   return shortcuts;
 }
 
-test("extension registers shortcuts from the active profile config", async () => {
+test("extension registers no shortcuts without opt-in config", async () => {
+  const agentDir = await mkdtemp(join(tmpdir(), "pi-autoresearch-test-"));
+  try {
+    withAgentDir(agentDir, () => {
+      assert.deepEqual(collectRegisteredShortcuts(), []);
+    });
+  } finally {
+    await rm(agentDir, { recursive: true, force: true });
+  }
+});
+
+test("extension registers each configured shortcut", async () => {
   const agentDir = await mkdtemp(join(tmpdir(), "pi-autoresearch-test-"));
   try {
     const configPath = autoresearchShortcutsConfigPath(agentDir);
@@ -176,6 +198,8 @@ test("extension registers shortcuts from the active profile config", async () =>
       JSON.stringify({
         shortcuts: {
           fullscreenDashboard: "ctrl+shift+u",
+          export: "alt+shift+e",
+          off: "alt+shift+q",
         },
       })
     );
@@ -183,7 +207,7 @@ test("extension registers shortcuts from the active profile config", async () =>
     withAgentDir(agentDir, () => {
       assert.deepEqual(
         collectRegisteredShortcuts().map((entry) => entry.shortcut),
-        ["ctrl+shift+u"]
+        ["ctrl+shift+u", "alt+shift+e", "alt+shift+q"]
       );
     });
   } finally {

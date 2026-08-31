@@ -48,6 +48,7 @@ pi install npm:pi-autoresearch
 | `/autoresearch off` | Leave autoresearch mode. Stops auto-resume and clears runtime state but keeps `.auto/log.jsonl` intact. |
 | `/autoresearch clear` | Delete `.auto/log.jsonl`, reset all state, and turn autoresearch mode off. Use this for a clean start. |
 | `/autoresearch export` | Open a live dashboard in your browser. Auto-updates as experiments run. |
+| `/autoresearch dashboard` | Open the fullscreen scrollable dashboard overlay in the terminal. Navigate with `↑`/`↓`/`j`/`k`, `PageUp`/`PageDown`/`u`/`d`, `g`/`G` for top/bottom, `Escape` or `q` to close. |
 
 **Examples:**
 
@@ -55,35 +56,71 @@ pi install npm:pi-autoresearch
 /autoresearch optimize unit test runtime, monitor correctness
 /autoresearch model training, run 5 minutes of train.py and note the loss ratio as optimization target
 /autoresearch export
+/autoresearch dashboard
 /autoresearch off
 /autoresearch clear
 ```
 
-### Keyboard shortcuts
+### Keyboard shortcuts (opt-in)
 
-| Shortcut     | Description |
-|--------------|-------------|
-| `Ctrl+Shift+F` | Open fullscreen scrollable dashboard overlay. Navigate with `↑`/`↓`/`j`/`k`, `PageUp`/`PageDown`/`u`/`d`, `g`/`G` for top/bottom, `Escape` or `q` to close. |
+No keyboard shortcuts are bound by default — pi's built-in keymap grows with every
+release, so any default chord eventually collides with it (this happened with
+`ctrl+shift+f` vs. pi's transcript search). Every action is available as a
+`/autoresearch` subcommand instead.
 
-To avoid conflicts with other pi extensions, override or disable these shortcuts in
-`<agent-dir>/extensions/pi-autoresearch.json`. `<agent-dir>` is the active pi profile
-config directory (usually `~/.pi/agent`, or `PI_CODING_AGENT_DIR` when set):
+If you prefer chords, opt in via `<agent-dir>/extensions/pi-autoresearch.json`.
+`<agent-dir>` is the active pi profile config directory (usually `~/.pi/agent`,
+or `PI_CODING_AGENT_DIR` when set):
 
 ```json
 {
   "shortcuts": {
-    "fullscreenDashboard": "ctrl+shift+y"
+    "fullscreenDashboard": "ctrl+shift+y",
+    "export": "alt+shift+e",
+    "off": null
   }
 }
 ```
 
-Use `null` to skip registering a shortcut. Omitted shortcuts keep their defaults.
+| Config key | Action | Command equivalent |
+|------------|--------|--------------------|
+| `fullscreenDashboard` | Open the fullscreen dashboard overlay | `/autoresearch dashboard` |
+| `export` | Open the browser dashboard | `/autoresearch export` |
+| `off` | Turn autoresearch mode off | `/autoresearch off` |
+
+Omitted or `null` keys stay unbound. Pick chords that don't clash with
+[pi's built-in keybindings](https://github.com/badlogic/pi-mono/blob/main/docs/keybindings.md)
+or other extensions — extension shortcuts win conflicts, so a clashing chord
+hijacks the built-in action.
+
+#### Picking a free chord (guidance for agents)
+
+Don't guess a chord — check it against the installed pi's keymap first:
+
+```bash
+PI_ROOT=$(ls -d ~/.pi/pkg/pi-* 2>/dev/null | sort -V | tail -1)
+[ -n "$PI_ROOT" ] || PI_ROOT="$(npm root -g)/@earendil-works/pi-coding-agent"
+node --input-type=module -e '
+const { KEYBINDINGS } = await import(process.argv[1] + "/dist/core/keybindings.js");
+const taken = new Set(Object.values(KEYBINDINGS).flatMap(b => [b.defaultKeys].flat()).map(k => k.toLowerCase()));
+console.log(taken.has(process.argv[2].toLowerCase()) ? "TAKEN" : "FREE");
+' "$PI_ROOT" ctrl+shift+y
+```
+
+Chords in `<agent-dir>/keybindings.json` values are also taken. Write a
+verified-free chord into `<agent-dir>/extensions/pi-autoresearch.json` (merge
+with existing contents), then `/reload` pi and confirm no `Extension shortcut
+conflict` warning appears.
+
+Good candidates as of pi 0.84.x: `ctrl+shift+y`, `ctrl+shift+u`, `alt+shift+f`,
+`ctrl+alt+d`. Always re-verify — pi's keymap grows over time, which is exactly
+why this extension binds nothing by default.
 
 ### UI
 
 - **Dashboard widget** — always visible above the editor: a full results table with columns for commit, metric, status, and description.
 - **Confidence score** — after 3+ runs, shows how the best improvement compares to the session noise floor. ≥2.0× (green) = likely real, 1.0–2.0× (yellow) = above noise but marginal, <1.0× (red) = within noise.
-- **Fullscreen overlay** — `Ctrl+Shift+F` opens a scrollable full-terminal dashboard. Shows a live spinner with elapsed time for running experiments.
+- **Fullscreen overlay** — `/autoresearch dashboard` opens a scrollable full-terminal dashboard. Shows a live spinner with elapsed time for running experiments.
 
 ### Skills
 
@@ -157,7 +194,7 @@ The agent reads `.auto/log.jsonl`, groups kept experiments into logical changese
 ### 4. Monitor progress
 
 - **Widget** — full results table, always visible above the editor
-- **`Ctrl+Shift+F`** — fullscreen scrollable dashboard overlay (config key: `shortcuts.fullscreenDashboard`)
+- **`/autoresearch dashboard`** — fullscreen scrollable dashboard overlay (optional chord: `shortcuts.fullscreenDashboard`)
 - **`/autoresearch export`** — open a live browser dashboard with chart and share card
 - **`Escape`** — interrupt anytime and ask for a summary
 
