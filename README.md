@@ -63,14 +63,14 @@ pi install npm:pi-autoresearch
 
 ### Keyboard shortcuts (opt-in)
 
-No keyboard shortcuts are bound by default — pi's built-in keymap grows with every
-release, so any default chord eventually collides with it (this happened with
-`ctrl+shift+f` vs. pi's transcript search). Every action is available as a
-`/autoresearch` subcommand instead.
+No shortcuts are bound by default — pi's built-in keymap grows with every release,
+so any default chord eventually collides with it (this happened with `ctrl+shift+f`
+vs. pi's transcript search). Every action is available as a `/autoresearch`
+subcommand instead.
 
-If you prefer chords, opt in via `<agent-dir>/extensions/pi-autoresearch.json`.
-`<agent-dir>` is the active pi profile config directory (usually `~/.pi/agent`,
-or `PI_CODING_AGENT_DIR` when set):
+To opt in, add chords to `<agent-dir>/extensions/pi-autoresearch.json`
+(`<agent-dir>` is usually `~/.pi/agent`, or `PI_CODING_AGENT_DIR` when set).
+Omitted or `null` keys stay unbound:
 
 ```json
 {
@@ -82,39 +82,14 @@ or `PI_CODING_AGENT_DIR` when set):
 }
 ```
 
-| Config key | Action | Command equivalent |
-|------------|--------|--------------------|
-| `fullscreenDashboard` | Open the fullscreen dashboard overlay | `/autoresearch dashboard` |
-| `export` | Open the browser dashboard | `/autoresearch export` |
-| `off` | Turn autoresearch mode off | `/autoresearch off` |
+Each key binds its `/autoresearch` subcommand: `fullscreenDashboard` → `dashboard`,
+`export` → `export`, `off` → `off`.
 
-Omitted or `null` keys stay unbound. Pick chords that don't clash with
-[pi's built-in keybindings](https://github.com/badlogic/pi-mono/blob/main/docs/keybindings.md)
-or other extensions — extension shortcuts win conflicts, so a clashing chord
-hijacks the built-in action.
-
-#### Picking a free chord (guidance for agents)
-
-Don't guess a chord — check it against the installed pi's keymap first:
-
-```bash
-PI_ROOT=$(ls -d ~/.pi/pkg/pi-* 2>/dev/null | sort -V | tail -1)
-[ -n "$PI_ROOT" ] || PI_ROOT="$(npm root -g)/@earendil-works/pi-coding-agent"
-node --input-type=module -e '
-const { KEYBINDINGS } = await import(process.argv[1] + "/dist/core/keybindings.js");
-const taken = new Set(Object.values(KEYBINDINGS).flatMap(b => [b.defaultKeys].flat()).map(k => k.toLowerCase()));
-console.log(taken.has(process.argv[2].toLowerCase()) ? "TAKEN" : "FREE");
-' "$PI_ROOT" ctrl+shift+y
-```
-
-Chords in `<agent-dir>/keybindings.json` values are also taken. Write a
-verified-free chord into `<agent-dir>/extensions/pi-autoresearch.json` (merge
-with existing contents), then `/reload` pi and confirm no `Extension shortcut
-conflict` warning appears.
-
-Good candidates as of pi 0.84.x: `ctrl+shift+y`, `ctrl+shift+u`, `alt+shift+f`,
-`ctrl+alt+d`. Always re-verify — pi's keymap grows over time, which is exactly
-why this extension binds nothing by default.
+Pick a chord that's free in [pi's built-in keybindings](https://github.com/badlogic/pi-mono/blob/main/docs/keybindings.md)
+and your `<agent-dir>/keybindings.json` — extension shortcuts win conflicts, so a
+clashing chord hijacks the built-in action. `ctrl+shift+y`, `ctrl+shift+u`,
+`alt+shift+f`, and `ctrl+alt+d` are free as of pi 0.84.x. After `/reload`, confirm
+pi shows no `Extension shortcut conflict` warning.
 
 ### UI
 
