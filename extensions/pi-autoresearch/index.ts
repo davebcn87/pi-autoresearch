@@ -2623,8 +2623,10 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         render(width: number): string[] {
           const { height } = getTuiSize(tui);
           const safeWidth = Math.max(1, width || getTuiSize(tui).width);
-          const viewportRows = Math.max(4, height - 4);
-          const content = buildOverlayContent(safeWidth);
+          // Match overlayOptions.maxHeight so pi doesn't clip the footer.
+          const overlayRows = Math.max(4, Math.floor(height * 0.9));
+          const viewportRows = Math.max(1, overlayRows - 3);
+          const content = buildOverlayContent(Math.max(4, safeWidth - 2));
 
           const totalRows = content.length;
           const maxScroll = Math.max(0, totalRows - viewportRows);
@@ -2634,26 +2636,27 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
           const out: string[] = [];
 
+          // Full box border: the overlay floats over the transcript, so every
+          // row must be padded to full width or the background bleeds through.
+          const innerWidth = Math.max(4, safeWidth - 2);
+          const border = (text: string) => theme.fg("border", text);
+          const boxRow = (line: string): string => {
+            const clipped = truncateToWidth(line, innerWidth, "…", true);
+            const pad = " ".repeat(Math.max(0, innerWidth - visibleWidth(clipped)));
+            return border("│") + clipped + pad + border("│");
+          };
+
           const title = truncateDisplayText(
             `🔬 autoresearch${state.name ? `: ${state.name}` : ""}`,
-            Math.max(0, safeWidth - 5)
+            Math.max(0, innerWidth - 2)
           );
-          const fillLen = Math.max(0, safeWidth - 3 - 1 - visibleWidth(title) - 1);
 
-          out.push(
-            truncateToWidth(
-              theme.fg("borderMuted", "───") +
-                theme.fg("accent", ` ${title} `) +
-                theme.fg("borderMuted", "─".repeat(fillLen)),
-              safeWidth,
-              "…",
-              true
-            )
-          );
+          out.push(border(`╭${"─".repeat(innerWidth)}╮`));
+          out.push(boxRow(` ${theme.fg("accent", title)}`));
 
           const visible = content.slice(scrollOffset, scrollOffset + viewportRows);
-          for (const line of visible) out.push(truncateToWidth(line, safeWidth, "…", true));
-          for (let i = visible.length; i < viewportRows; i++) out.push("");
+          for (const line of visible) out.push(boxRow(line));
+          for (let i = visible.length; i < viewportRows; i++) out.push(boxRow(""));
 
           const scrollInfo = totalRows > viewportRows
             ? ` ${scrollOffset + 1}-${Math.min(scrollOffset + viewportRows, totalRows)}/${totalRows}`
@@ -2661,11 +2664,11 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
           const helpText = safeWidth >= 85
             ? ` ↑↓/j/k scroll • pgup/pgdn • g/G • esc close${scrollInfo} `
             : ` j/k scroll • esc close${scrollInfo} `;
-          const footFill = Math.max(0, safeWidth - visibleWidth(helpText));
+          const footFill = Math.max(0, safeWidth - 2 - visibleWidth(helpText));
 
           out.push(
             truncateToWidth(
-              theme.fg("borderMuted", "─".repeat(footFill)) + theme.fg("dim", helpText),
+              border("╰" + "─".repeat(footFill)) + theme.fg("dim", helpText) + border("╯"),
               safeWidth,
               "…",
               true
