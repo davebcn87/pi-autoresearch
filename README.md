@@ -3,7 +3,7 @@
 
 # pi-autoresearch
 ### Autonomous experiment loop for pi
-**[Install](#install)** · **[Usage](#usage)** · **[How it works](#how-it-works)**
+**[Website](https://davebcn87.github.io/pi-autoresearch/)** · **[Documentation](https://davebcn87.github.io/pi-autoresearch/configuration.html)** · **[Install](#install)** · **[Usage](#usage)** · **[How it works](#how-it-works)**
 
 </div>
 
@@ -357,6 +357,14 @@ Drop executable scripts in `.auto/hooks/` to run code at iteration boundaries. H
 
 1. **Install pi** — follow the instructions at [pi.dev](https://pi.dev/)
 2. **An API key** for your preferred LLM provider (configured in pi)
+
+## Security and trust
+
+Pi packages run with your full user permissions. Review this repository before installing it, and run autoresearch in a dedicated branch or worktree with a clean working tree.
+
+Autoresearch intentionally edits files, creates and reverts commits, and executes the commands in `.auto/measure.sh`, `.auto/checks.sh`, and `.auto/hooks/`. Treat those files as executable code: review them before each session, keep credentials and sensitive files out of scope, and use a sandbox or restricted environment for untrusted projects.
+
+For reproducible installs, pin a version you have reviewed, for example `pi install npm:pi-autoresearch@1.7.0`. Published npm releases include provenance attestations.
 
 ## Controlling costs
 

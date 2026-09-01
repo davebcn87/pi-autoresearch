@@ -1,0 +1,15 @@
+{
+  "name": "pi-autoresearch-site",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "packageManager": "pnpm@10.28.2",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "asciinema-player": "3.17.0",
+    "markdown-it": "15.0.0",
+    "markdown-it-anchor": "9.2.0"
+  }
+}
