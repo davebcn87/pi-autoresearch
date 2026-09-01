@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' blob: https://api.github.com; media-src 'self' blob:; frame-src https://platform.twitter.com; object-src 'none'; base-uri 'none'; form-action 'none'; upgrade-insecure-requests">
+    <meta name="referrer" content="no-referrer">
+    <meta name="theme-color" content="#070a08">
+    <meta name="description" content="Configuration reference for pi-autoresearch: session files, runtime options, shortcuts, hooks, and intentionally fixed behavior.">
+    <link rel="canonical" href="https://davebcn87.github.io/pi-autoresearch/configuration.html">
+    <link rel="icon" href="assets/og-image.webp">
+    <link rel="stylesheet" href="styles.css">
+    <title>{{title}} — pi-autoresearch</title>
+  </head>
+  <body class="docs-page">
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="site-header">
+      <div class="shell header-inner">
+        <a class="wordmark" href="index.html" aria-label="pi-autoresearch home">
+          <img class="wordmark-logo" src="assets/og-image.webp" width="32" height="32" alt="">
+          <span>pi-autoresearch</span>
+        </a>
+        <nav class="nav" aria-label="Documentation navigation">
+          <a href="index.html">Home</a>
+          <a class="nav-github" href="https://github.com/davebcn87/pi-autoresearch">GitHub</a>
+        </nav>
+      </div>
+    </header>
+
+    <main id="main" class="docs-main shell">
+      <aside class="docs-sidebar" aria-label="On this page">
+        <p>On this page</p>
+        <nav aria-label="Configuration sections">{{toc}}</nav>
+      </aside>
+
+      <article class="docs-content docs-markdown">
+        <header class="docs-hero">
+          <p class="eyebrow">Reference</p>
+          <h1>{{title}}</h1>
+          <p>{{intro}}</p>
+        </header>
+        {{content}}
+      </article>
+    </main>
+  </body>
+</html>

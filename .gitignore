@@ -4,3 +4,6 @@ node_modules/
 # AI-generated image artefacts (should not be committed)
 gpt-image-*.png
 nano-banana-*.png
+
+# Generated site output
+/site/build/

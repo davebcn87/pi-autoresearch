@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' blob: https://api.github.com; media-src 'self' blob:; frame-src https://platform.twitter.com; object-src 'none'; base-uri 'none'; form-action 'none'; upgrade-insecure-requests">
+    <meta name="referrer" content="no-referrer">
+    <meta name="theme-color" content="#070a08">
+    <meta name="description" content="pi-autoresearch gives pi an autonomous experiment loop: try an idea, measure it, keep what works, revert what doesn't, and repeat.">
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="pi-autoresearch — Autonomous experiment loop for pi">
+    <meta property="og:description" content="Try an idea. Measure it. Keep what works. Revert what doesn't. Repeat.">
+    <meta property="og:image" content="https://davebcn87.github.io/pi-autoresearch/assets/social-preview.png">
+    <meta property="og:url" content="https://davebcn87.github.io/pi-autoresearch/">
+    <meta name="twitter:card" content="summary_large_image">
+    <link rel="canonical" href="https://davebcn87.github.io/pi-autoresearch/">
+    <link rel="icon" href="assets/og-image.webp">
+    <link rel="stylesheet" href="vendor/asciinema-player.css">
+    <link rel="stylesheet" href="styles.css">
+    <title>pi-autoresearch — Autonomous experiment loop for pi</title>
+  </head>
+  <body class="landing-page">
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header">
+      <div class="shell header-inner">
+        <a class="wordmark" href="#top" aria-label="pi-autoresearch home">
+          <img class="wordmark-logo" src="assets/og-image.webp" width="32" height="32" alt="">
+          <span>pi-autoresearch</span>
+        </a>
+        <nav class="nav" aria-label="Primary navigation">
+          <a href="#how-it-works">How it works</a>
+          <a href="#guardrails">Guardrails</a>
+          <a href="configuration.html">Docs</a>
+          <a class="nav-github" href="https://github.com/davebcn87/pi-autoresearch">GitHub</a>
+        </nav>
+      </div>
+    </header>
+
+    <main id="main">
+      <section class="hero shell" id="top">
+        <div class="hero-copy">
+          <p class="eyebrow">Autonomous optimization for pi</p>
+          <h1>
+            Give pi a metric.
+            <span>Let it run.</span>
+          </h1>
+          <p class="hero-intro">It tests ideas, measures every result, keeps improvements, and reverts the rest.</p>
+          <div class="install" data-copy-block>
+            <code><span aria-hidden="true">$</span> pi install npm:pi-autoresearch</code>
+            <button class="copy-button" type="button" data-copy="pi install npm:pi-autoresearch" aria-label="Copy install command">
+              <svg aria-hidden="true" viewBox="0 0 24 24"><rect x="8" y="8" width="11" height="11" rx="2"></rect><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"></path></svg>
+              <span>Copy</span>
+            </button>
+          </div>
+          <p class="install-safety"><strong>Runs with your user permissions.</strong> Review the source and use a dedicated branch or worktree. <a href="configuration.html#safety">Security guidance →</a></p>
+          <div class="hero-meta">
+            <a class="github-star" href="https://github.com/davebcn87/pi-autoresearch" aria-label="Star pi-autoresearch on GitHub">
+              <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m12 2.8 2.8 5.7 6.3.9-4.6 4.4 1.1 6.3-5.6-3-5.6 3 1.1-6.3-4.6-4.4 6.3-.9Z"></path></svg>
+              <span>Star on GitHub</span>
+              <strong data-github-stars>7,950</strong>
+            </a>
+            <p class="hero-note">MIT licensed. Built for <a href="https://pi.dev/">pi</a>.</p>
+          </div>
+        </div>
+
+        <figure class="product-frame hero-visual terminal-figure">
+          <div class="terminal-player-frame">
+            <div class="terminal-chrome" aria-hidden="true"><span class="terminal-lights"><i></i><i></i><i></i></span><span>pi — autoresearch</span><span class="terminal-shell">zsh</span></div>
+            <div class="terminal-player" data-cast-player data-desktop-cast="recordings/experiment-compact.cast" data-mobile-cast="recordings/experiment-mobile.cast" role="button" tabindex="0" aria-pressed="true" aria-label="Playing interactive pi-autoresearch terminal recording. Press Space or Enter to pause."></div>
+          </div>
+        </figure>
+      </section>
+
+      <section class="chapter chapter-tint" id="how-it-works">
+        <div class="shell process-journal-layout">
+          <div class="process-story">
+            <div class="section-heading">
+              <p class="eyebrow">How it works</p>
+              <h2>One goal. <span>Many measured attempts.</span></h2>
+              <p>Give pi a metric and a boundary. It explores one hypothesis at a time, keeps evidence, and lets the benchmark decide.</p>
+            </div>
+            <div class="process-prompt">
+              <p>Start with a measurable goal</p>
+              <div class="prompt-example">
+                <span class="prompt-mark" aria-hidden="true">›</span>
+                <code>/autoresearch optimize unit test runtime, monitor correctness</code>
+              </div>
+            </div>
+            <p class="process-assurance">Agents get clever. Benchmarks remain unimpressed. Only measured improvements survive.</p>
+          </div>
+
+          <figure class="experiment-journal">
+            <header class="journal-header">
+              <div>
+                <span class="journal-live"><i aria-hidden="true"></i> Session running</span>
+                <h3>Unit test runtime</h3>
+              </div>
+              <span class="journal-run-count">Run 06</span>
+            </header>
+            <div class="journal-progress">
+              <span><small>Baseline</small>12.84s</span>
+              <span class="journal-progress-arrow" aria-hidden="true">→</span>
+              <span><small>Best</small>1.28s</span>
+              <strong>−90.0%</strong>
+            </div>
+            <div class="journal-table">
+              <div class="journal-row journal-labels"><span>Run</span><span>Hypothesis</span><span>Metric</span><span>Decision</span></div>
+              <div class="journal-row"><span>01</span><span>Establish baseline</span><span>12.84s</span><strong class="journal-neutral">baseline</strong></div>
+              <div class="journal-row"><span>02</span><span>Isolate worker pool</span><span>9.62s</span><strong class="journal-keep">keep</strong></div>
+              <div class="journal-row"><span>03</span><span>Surely 12 threads is faster</span><span>10.19s</span><strong class="journal-revert">revert</strong></div>
+              <div class="journal-row"><span>04</span><span>Stop rebuilding every test file</span><span>4.08s</span><strong class="journal-keep">keep</strong></div>
+              <div class="journal-row"><span>05</span><span>Transform only the files that need it</span><span>1.28s</span><strong class="journal-keep">keep</strong></div>
+              <div class="journal-row journal-running"><span>06</span><span>Remove one more suspiciously expensive thing</span><span>measuring</span><strong><i aria-hidden="true"></i> running</strong></div>
+            </div>
+            <figcaption><span>Next hypothesis is queued from what the last run learned.</span><code>.auto/log.jsonl</code></figcaption>
+          </figure>
+        </div>
+      </section>
+
+      <section class="chapter chapter-dark guardrails-section" id="guardrails">
+        <div class="shell section-heading section-heading-light guardrail-heading">
+          <p class="eyebrow">Correctness first</p>
+          <h2>Faster is only a win <span>if the code still works.</span></h2>
+          <p>Add a checks file once. Every promising experiment must pass it before the change can survive.</p>
+        </div>
+
+        <div class="shell guardrail-body">
+          <div class="code-window guardrail-code">
+            <div class="code-window-bar"><span></span><span></span><span></span><small>.auto/checks.sh</small></div>
+            <pre><code><span class="code-muted">#!/bin/bash</span>
+set -euo pipefail
+
+pnpm test --run
+pnpm typecheck
+pnpm lint</code></pre>
+          </div>
+
+          <div class="guardrail-list">
+            <article><span>01</span><div><h3>Measure first</h3><p>The benchmark records its result before correctness checks begin. The primary metric stays clean.</p></div></article>
+            <article><span>02</span><div><h3>Checks have veto power</h3><p>A failed test, type check, or lint blocks the keep and reverts the experiment.</p></div></article>
+            <article><span>03</span><div><h3>Keep the evidence</h3><p>The dashboard distinguishes regressions, crashes, and check failures so the next attempt can learn from them.</p></div></article>
+          </div>
+        </div>
+        <div class="shell guardrail-docs-link"><a href="configuration.html">Read the configuration reference →</a></div>
+      </section>
+
+      <section class="chapter">
+        <div class="shell split split-memory">
+          <div class="section-heading sticky-copy">
+            <p class="eyebrow">Durable by design</p>
+            <h2>Agents forget. <span>The experiment doesn't.</span></h2>
+            <p>Every decision is written to the project. Restarts, context resets, and auto-compaction do not erase the work.</p>
+            <p class="detail">A fresh agent reads the session files and continues from evidence—not a fragile memory of the conversation.</p>
+          </div>
+
+          <div class="file-stack">
+            <article class="file-card">
+              <header>
+                <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><path d="M14 2v6h6"></path></svg>
+                <code>.auto/prompt.md</code>
+              </header>
+              <p>The objective, constraints, scope, tried ideas, dead ends, and key wins. The handoff for the next agent.</p>
+            </article>
+
+            <article class="file-card ideas-file">
+              <header>
+                <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M9 18h6M10 22h4"></path><path d="M8.5 14.5A6 6 0 1 1 15.5 14.5C14.6 15.1 14 16 14 17h-4c0-1-.6-1.9-1.5-2.5Z"></path></svg>
+                <code>.auto/ideas.md</code>
+              </header>
+              <ul class="file-preview">
+                <li>Reuse transformed modules</li>
+                <li>Try isolated worker pools</li>
+                <li>Profile setup-file reloads</li>
+              </ul>
+              <p>Promising ideas wait here instead of disappearing with the context window.</p>
+            </article>
+
+            <article class="file-card">
+              <header>
+                <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path></svg>
+                <code>.auto/log.jsonl</code>
+              </header>
+              <p>An append-only record of every metric, commit, decision, description, and confidence score.</p>
+            </article>
+
+            <article class="file-card hooks-file">
+              <header>
+                <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M8 3 4 7l4 4M16 21l4-4-4-4"></path><path d="M4 7h10a6 6 0 0 1 6 6v4"></path></svg>
+                <code>.auto/hooks/</code>
+              </header>
+              <div class="hook-preview"><code>before.sh</code><span>experiment</span><code>after.sh</code></div>
+              <p>Fetch research before a run; persist learnings or notify afterward.</p>
+              <a href="configuration.html#hooks">Read the hook contract →</a>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="chapter chapter-dark" id="capabilities">
+        <div class="shell">
+          <div class="section-heading section-heading-light">
+            <p class="eyebrow">Evidence, not optimism</p>
+            <h2>A faster number isn't always a win. <span>Know when it is probably noise.</span></h2>
+            <p>After three runs, pi-autoresearch compares the best improvement with the session's noise floor using Median Absolute Deviation.</p>
+          </div>
+
+          <div class="confidence-layout">
+            <div class="confidence-score">
+              <span class="confidence-label">Best improvement confidence</span>
+              <strong>2.7×</strong>
+              <span class="confidence-result"><i aria-hidden="true"></i> Likely real</span>
+            </div>
+            <div class="confidence-scale">
+              <div class="scale-row">
+                <span><i class="status-dot status-good" aria-hidden="true"></i> 2.0× and above</span>
+                <strong>Likely real</strong>
+              </div>
+              <div class="scale-row">
+                <span><i class="status-dot status-warn" aria-hidden="true"></i> 1.0–2.0×</span>
+                <strong>Above noise, but marginal</strong>
+              </div>
+              <div class="scale-row">
+                <span><i class="status-dot status-bad" aria-hidden="true"></i> Below 1.0×</span>
+                <strong>Within the noise floor</strong>
+              </div>
+            </div>
+          </div>
+          <p class="dark-note">Confidence is advisory. It encourages re-runs when a result is uncertain; it never discards work for you.</p>
+        </div>
+      </section>
+
+      <section class="chapter browser-dashboard-section" id="dashboard">
+        <div class="shell">
+          <div class="section-heading">
+            <p class="eyebrow">Browser dashboard</p>
+            <h2>Watch the numbers move. <span>Share the evidence.</span></h2>
+            <p><code>/autoresearch export</code> opens a live dashboard with the full experiment history. This example uses results from the <a href="https://shopify.engineering/autoresearch">Shopify Engineering case study</a>.</p>
+          </div>
+
+          <div class="browser-dashboard" data-results-dashboard>
+            <header class="dashboard-header">
+              <div>
+                <h3>Autoresearch results</h3>
+                <div class="dashboard-session-meta">
+                  <p data-dashboard-subtitle>Polaris visual regression build</p>
+                  <span class="dashboard-live"><i aria-hidden="true"></i><span data-dashboard-state>Complete · 12 experiments</span></span>
+                  <span class="visually-hidden" data-dashboard-announcement aria-live="polite"></span>
+                </div>
+              </div>
+              <div class="dashboard-tabs" role="tablist" aria-label="Published Shopify results">
+                <button class="dashboard-tab is-active" type="button" role="tab" aria-selected="true" data-dashboard-tab="polaris">Polaris build</button>
+                <button class="dashboard-tab" type="button" role="tab" aria-selected="false" data-dashboard-tab="liquid">Shopify Liquid</button>
+              </div>
+            </header>
+
+            <div class="dashboard-cards">
+              <article>
+                <span data-card-label="0">Baseline → Best</span>
+                <strong data-card-value="0">19.1s → ≈6.69s</strong>
+              </article>
+              <article>
+                <span data-card-label="1">Improvement</span>
+                <strong class="dashboard-good" data-card-value="1">65% faster</strong>
+              </article>
+              <article>
+                <span data-card-label="2">Runs</span>
+                <strong data-card-value="2">12</strong>
+              </article>
+              <article>
+                <span data-card-label="3">Kept</span>
+                <strong data-card-value="3">9 / 12</strong>
+              </article>
+            </div>
+
+            <div class="dashboard-chart">
+              <div class="chart-labels">
+                <span data-chart-label>Normalized build runtime</span>
+                <span data-chart-change>−65%</span>
+              </div>
+              <svg viewBox="0 0 800 250" role="img" aria-labelledby="dashboard-chart-title dashboard-chart-description">
+                <title id="dashboard-chart-title">Published autoresearch result compared with its baseline</title>
+                <desc id="dashboard-chart-description">The selected Shopify result falls from a normalized baseline of 100 to the published final result.</desc>
+                <g class="chart-grid" aria-hidden="true">
+                  <path d="M40 35H770M40 95H770M40 155H770M40 215H770"></path>
+                  <path d="M40 25V215M222 25V215M405 25V215M587 25V215M770 25V215"></path>
+                </g>
+                <g class="chart-series" data-dashboard-series>
+                  <path class="chart-area" data-dashboard-area d="M40 35 L106 51 L173 46 L239 67 L305 78 L372 73 L438 94 L505 109 L571 103 L637 129 L704 141 L770 152 L770 215 L40 215 Z"></path>
+                  <path class="chart-line" data-dashboard-line d="M40 35 L106 51 L173 46 L239 67 L305 78 L372 73 L438 94 L505 109 L571 103 L637 129 L704 141 L770 152"></path>
+                  <g class="chart-points" data-dashboard-points aria-hidden="true">
+                    <circle cx="40" cy="35" r="4"></circle>
+                    <circle cx="106" cy="51" r="4"></circle>
+                    <circle class="discard-point" cx="173" cy="46" r="4"></circle>
+                    <circle cx="239" cy="67" r="4"></circle>
+                    <circle cx="305" cy="78" r="4"></circle>
+                    <circle class="discard-point" cx="372" cy="73" r="4"></circle>
+                    <circle cx="438" cy="94" r="4"></circle>
+                    <circle cx="505" cy="109" r="4"></circle>
+                    <circle class="discard-point" cx="571" cy="103" r="4"></circle>
+                    <circle cx="637" cy="129" r="4"></circle>
+                    <circle cx="704" cy="141" r="4"></circle>
+                    <circle class="best-point" cx="770" cy="152" r="6"></circle>
+                  </g>
+                </g>
+                <g class="chart-axis" aria-hidden="true">
+                  <text x="30" y="39" text-anchor="end">100</text>
+                  <text x="30" y="99" text-anchor="end">67</text>
+                  <text x="30" y="159" text-anchor="end">33</text>
+                  <text x="30" y="219" text-anchor="end">0</text>
+                  <text x="40" y="240">Run 1</text>
+                  <text x="770" y="240" text-anchor="end">Run 12</text>
+                </g>
+              </svg>
+            </div>
+
+            <div class="dashboard-results-table">
+              <div class="dashboard-result-row dashboard-result-header">
+                <span>Run</span><span>Status</span><span>Runtime index</span><span>Δ baseline</span><span>Experiment</span>
+              </div>
+              <div data-dashboard-run-rows>
+                <div class="dashboard-result-row"><strong>01</strong><span class="run-status keep">keep</span><span>100</span><span>—</span><span>Full VRT build baseline</span></div>
+                <div class="dashboard-result-row"><strong>02</strong><span class="run-status keep">keep</span><span>91</span><span class="dashboard-good">−9%</span><span>Skip declaration emit for Storybook</span></div>
+                <div class="dashboard-result-row"><strong>03</strong><span class="run-status discard">discard</span><span>94</span><span>−6%</span><span>Increase transform workers</span></div>
+                <div class="dashboard-result-row"><strong>04</strong><span class="run-status keep">keep</span><span>82</span><span class="dashboard-good">−18%</span><span>Compile Storybook from source</span></div>
+                <div class="dashboard-result-row"><strong>05</strong><span class="run-status keep">keep</span><span>76</span><span class="dashboard-good">−24%</span><span>Limit TypeScript transform scope</span></div>
+                <div class="dashboard-result-row"><strong>06</strong><span class="run-status discard">discard</span><span>79</span><span>−21%</span><span>Disable source maps globally</span></div>
+                <div class="dashboard-result-row"><strong>07</strong><span class="run-status keep">keep</span><span>67</span><span class="dashboard-good">−33%</span><span>Transform matched files only</span></div>
+                <div class="dashboard-result-row"><strong>08</strong><span class="run-status keep">keep</span><span>59</span><span class="dashboard-good">−41%</span><span>Reuse resolved configuration</span></div>
+                <div class="dashboard-result-row"><strong>09</strong><span class="run-status discard">discard</span><span>62</span><span>−38%</span><span>Cache all module resolution</span></div>
+                <div class="dashboard-result-row"><strong>10</strong><span class="run-status keep">keep</span><span>48</span><span class="dashboard-good">−52%</span><span>Skip redundant IIFE bundle</span></div>
+                <div class="dashboard-result-row"><strong>11</strong><span class="run-status keep">keep</span><span>41</span><span class="dashboard-good">−59%</span><span>Narrow component entry points</span></div>
+                <div class="dashboard-result-row best-run"><strong>12</strong><span class="run-status keep">keep</span><span>35</span><span class="dashboard-good">−65%</span><span>Transform only 105 matched files</span></div>
+              </div>
+            </div>
+            <footer class="dashboard-source">
+              <span>Published endpoints · representative 12-run session</span>
+              <a href="https://shopify.engineering/autoresearch">View source ↗</a>
+            </footer>
+          </div>
+
+          <div class="share-showcase">
+            <div class="share-showcase-copy">
+              <p class="eyebrow">Shareable by default</p>
+              <h3>Turn a long session <span>into one clear result.</span></h3>
+              <p>The browser dashboard exports a social-ready image with the metric, run history, and source intact.</p>
+              <code>/autoresearch export</code>
+            </div>
+
+            <article class="social-post" aria-label="Example social post showing an exported autoresearch result">
+              <span class="social-post-label">Example post</span>
+              <header>
+                <img src="assets/og-image.webp" width="42" height="42" alt="">
+                <div><strong>You</strong><span>@yourhandle · now</span></div>
+                <span class="social-post-more" aria-hidden="true">•••</span>
+              </header>
+              <p>I asked an agent to make the build faster. It tried 12 things, got one confidently wrong, and still cut runtime by 65%.</p>
+              <img class="social-post-media" src="assets/result-share-card.png" width="1200" height="630" alt="Exported pi-autoresearch result showing a 65 percent faster Polaris visual regression build across 12 runs">
+              <footer aria-hidden="true">
+                <span><svg viewBox="0 0 24 24"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"></path></svg></span>
+                <span><svg viewBox="0 0 24 24"><path d="m17 2 4 4-4 4M3 11V9a3 3 0 0 1 3-3h15M7 22l-4-4 4-4M21 13v2a3 3 0 0 1-3 3H3"></path></svg></span>
+                <span><svg viewBox="0 0 24 24"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8l1.1 1.1L12 21l7.8-7.5 1.1-1.1a5.5 5.5 0 0 0-.1-7.8Z"></path></svg></span>
+                <span><svg viewBox="0 0 24 24"><path d="M4 19V9M10 19V5M16 19v-7M22 19H2"></path></svg></span>
+              </footer>
+            </article>
+          </div>
+
+          <a class="case-study-link" href="https://shopify.engineering/autoresearch">
+            <span>Shopify Engineering case study</span>
+            <strong>Autoresearch isn't just for training models</strong>
+            <span>Read the story ↗</span>
+          </a>
+        </div>
+      </section>
+
+      <section class="chapter chapter-tint authority-section" id="stories" data-tweet-section>
+        <div class="shell">
+          <div class="section-heading">
+            <p class="eyebrow">In the wild</p>
+            <h2>Real codebases. <span>Results people shared publicly.</span></h2>
+            <p>From Shopify Liquid to a new canvas rendering engine, teams are using the loop to surface improvements nobody would schedule by hand.</p>
+          </div>
+
+          <div class="tweet-grid">
+            <blockquote class="twitter-tweet" data-tweet-id="2032212531846971413" data-tweet-author="Tobi Lütke">
+              <p lang="en" dir="ltr">OK, well. I ran /autoresearch on the the liquid codebase.<br>53% faster combined parse+render time, 61% fewer object allocations.<br><br>This is probably somewhat overfit, but there are absolutely amazing ideas in this.</p>
+              <footer>— Tobi Lütke (@tobi), <a href="https://x.com/tobi/status/2032212531846971413">March 12, 2026</a></footer>
+            </blockquote>
+
+            <blockquote class="twitter-tweet" data-tweet-id="2034481488356413883" data-tweet-author="Kaspars Dancis">
+              <p lang="en" dir="ltr">We've been experimenting with pi-autoresearch to optimize the new canvas rendering engine. 10x improvement on the slowest test in couple hours.<br><br>While it did take some shortcuts that degraded rendering quality, it also came up with several great ideas…</p>
+              <footer>— Kaspars Dancis (@KasparsDancis), <a href="https://x.com/KasparsDancis/status/2034481488356413883">March 19, 2026</a></footer>
+            </blockquote>
+
+            <blockquote class="twitter-tweet" data-tweet-id="2032236372178976827" data-tweet-author="Alex Volkov">
+              <p lang="en" dir="ltr">Works for ANY optimization target: test speed, bundle size, build times, Lighthouse scores.<br><br>You give it a metric. It loops until you stop it.<br><br>This is the new benchmarking.</p>
+              <footer>— Alex Volkov (@altryne), <a href="https://x.com/altryne/status/2032236372178976827">March 12, 2026</a></footer>
+            </blockquote>
+          </div>
+
+          <div class="authority-footer">
+            <p class="authority-note">Quoted from public posts on X. Dates link to the originals. Read the full Shopify story in <a href="https://shopify.engineering/autoresearch">Autoresearch isn't just for training models</a>.</p>
+            <button class="load-tweets" type="button" data-load-tweets>Load sandboxed X embeds</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="chapter">
+        <div class="shell">
+          <div class="section-heading">
+            <p class="eyebrow">Domain agnostic</p>
+            <h2>If you can measure it, <span>the loop can improve it.</span></h2>
+            <p>The extension provides the experiment infrastructure. Skills bring the knowledge of what to try.</p>
+          </div>
+
+          <div class="metric-table-scroll">
+            <table class="metric-table">
+              <caption class="visually-hidden">Example optimization domains, metrics, and commands</caption>
+              <thead>
+                <tr class="metric-header">
+                  <th scope="col">Target</th>
+                  <th scope="col">Metric</th>
+                  <th scope="col">Example command</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <th scope="row">Test speed</th>
+                  <td>Seconds ↓</td>
+                  <td><code>pnpm test</code></td>
+                </tr>
+                <tr>
+                  <th scope="row">Bundle size</th>
+                  <td>Kilobytes ↓</td>
+                  <td><code>pnpm build &amp;&amp; du -sb dist</code></td>
+                </tr>
+                <tr>
+                  <th scope="row">LLM training</th>
+                  <td>Validation loss ↓</td>
+                  <td><code>uv run train.py</code></td>
+                </tr>
+                <tr>
+                  <th scope="row">Build speed</th>
+                  <td>Seconds ↓</td>
+                  <td><code>pnpm build</code></td>
+                </tr>
+                <tr>
+                  <th scope="row">Lighthouse</th>
+                  <td>Performance ↑</td>
+                  <td><code>lighthouse http://localhost:3000</code></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="chapter">
+        <div class="shell split finalize-layout">
+          <figure class="terminal-figure finalize-demo">
+            <div class="terminal-player-frame">
+              <div class="terminal-chrome" aria-hidden="true"><span class="terminal-lights"><i></i><i></i><i></i></span><span>pi — finalize</span><span class="terminal-shell">zsh</span></div>
+              <div class="terminal-player" data-cast-player data-desktop-cast="recordings/finalize.cast" data-mobile-cast="recordings/finalize-mobile.cast" role="button" tabindex="0" aria-pressed="true" aria-label="Playing interactive autoresearch finalization terminal recording. Press Space or Enter to pause."></div>
+            </div>
+          </figure>
+
+          <div class="section-heading">
+            <p class="eyebrow">A clean ending</p>
+            <h2>Experiments are messy. <span>Your review shouldn't be.</span></h2>
+            <p><code>/skill:autoresearch-finalize</code> groups compatible wins and creates independent branches from the merge-base.</p>
+            <p class="detail">Each branch is focused, reviewable, and carries its measured improvement in the commit history.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="chapter chapter-tint monitor-section">
+        <div class="shell">
+          <div class="section-heading">
+            <p class="eyebrow">Stay close or walk away</p>
+            <h2>Watch the loop <span>at the level you need.</span></h2>
+          </div>
+
+          <div class="monitor-list">
+            <article>
+              <svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"></rect><path d="m7 9 2 2-2 2M12 13h5"></path></svg>
+              <div>
+                <h3>Live widget</h3>
+                <p>Every result stays visible above the pi editor while you work.</p>
+              </div>
+            </article>
+            <article>
+              <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"></path></svg>
+              <div>
+                <h3>Fullscreen dashboard</h3>
+                <p>Open a scrollable terminal view with <code>/autoresearch dashboard</code>. Optional shortcuts are opt-in.</p>
+              </div>
+            </article>
+            <article>
+              <svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"></circle><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"></path></svg>
+              <div>
+                <h3>Browser export</h3>
+                <p>Open a live chart and shareable results view with <code>/autoresearch export</code>.</p>
+              </div>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="chapter hooks-section">
+        <div class="shell split hooks-layout">
+          <div class="section-heading">
+            <p class="eyebrow">Extension points</p>
+            <h2>The core stays small. <span>Hooks make the loop yours.</span></h2>
+            <p>Optional scripts run before or after each iteration without coupling custom behavior to the agent.</p>
+          </div>
+          <div class="hooks-list">
+            <span>Fetch external research</span>
+            <span>Keep a learnings journal</span>
+            <span>Send native notifications</span>
+            <span>Detect idea thrashing</span>
+            <span>Rotate hypotheses</span>
+            <span>Tag meaningful wins</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="closing chapter-dark">
+        <div class="shell closing-inner">
+          <p class="eyebrow">Start with one metric</p>
+          <h2>Try an idea. Measure it.<br><span>Keep only what works.</span></h2>
+          <div class="install install-light" data-copy-block>
+            <code><span aria-hidden="true">$</span> pi install npm:pi-autoresearch</code>
+            <button class="copy-button" type="button" data-copy="pi install npm:pi-autoresearch" aria-label="Copy install command">
+              <svg aria-hidden="true" viewBox="0 0 24 24"><rect x="8" y="8" width="11" height="11" rx="2"></rect><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"></path></svg>
+              <span>Copy</span>
+            </button>
+          </div>
+          <div class="closing-links">
+            <a href="https://github.com/davebcn87/pi-autoresearch">View on GitHub <span aria-hidden="true">↗</span></a>
+            <a href="https://www.npmjs.com/package/pi-autoresearch">View on npm <span aria-hidden="true">↗</span></a>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="shell footer-inner">
+        <p>pi-autoresearch</p>
+        <p>Inspired by <a href="https://github.com/karpathy/autoresearch">karpathy/autoresearch</a>. Built for <a href="https://pi.dev/">pi</a>. MIT licensed. <a href="https://github.com/davebcn87/pi-autoresearch/blob/main/THIRD_PARTY_NOTICES.md">Third-party notices</a>.</p>
+      </div>
+    </footer>
+
+    <script src="recordings/casts.js"></script>
+    <script src="vendor/asciinema-player.min.js"></script>
+    <script src="script.js"></script>
+  </body>
+</html>

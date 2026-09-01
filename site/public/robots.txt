@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://davebcn87.github.io/pi-autoresearch/sitemap.xml
