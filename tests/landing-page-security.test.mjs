@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 
 const landingPage = readFileSync(new URL("../site/public/index.html", import.meta.url), "utf8");
@@ -8,6 +8,12 @@ const landingScript = readFileSync(new URL("../site/public/script.js", import.me
 function contentSecurityPolicy() {
   return landingPage.match(/http-equiv="Content-Security-Policy" content="([^"]+)"/)?.[1];
 }
+
+test("social preview uses the current dark website design", () => {
+  assert.match(landingPage, /assets\/social-preview-dark\.png/);
+  assert.doesNotMatch(landingPage, /assets\/social-preview\.png/);
+  assert.ok(existsSync(new URL("../site/public/assets/social-preview-dark.png", import.meta.url)));
+});
 
 test("landing page executes only same-origin parent scripts", () => {
   const policy = contentSecurityPolicy();
