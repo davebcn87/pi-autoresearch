@@ -327,6 +327,22 @@ test("starting autoresearch binds redirected workingDir activation to the pi ses
   }
 });
 
+test("starting autoresearch without prompt.md sends the create skill with expansion enabled", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-cwd-"));
+
+  try {
+    const harness = createHarness({ cwd });
+    await harness.commands.get("autoresearch").handler("optimize runtime", harness.ctx);
+
+    assert.equal(harness.sentMessages.length, 1);
+    const [kickoff] = harness.sentMessages;
+    assert.match(kickoff.content, /^\/skill:autoresearch-create optimize runtime/);
+    assert.equal(kickoff.options.expandPromptTemplates, true);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("session startup keeps same-cwd sessions inactive when a manual off is recorded", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-cwd-"));
 
