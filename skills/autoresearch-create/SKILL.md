@@ -64,8 +64,8 @@ This is the heart of the session. A fresh agent with no context should be able t
 <Hard rules: tests must pass, no new deps, etc.>
 
 ## What's Been Tried
-<Update this section as experiments accumulate. Note key wins, dead ends,
-and architectural insights so the agent doesn't repeat failed approaches.>
+<Update this section as experiments accumulate. Note key wins, architectural
+insights, and discarded ideas: why they failed and what would justify revisiting them.>
 ```
 
 Update `.auto/prompt.md` periodically — especially the "What's Been Tried" section — so resuming agents have full context.

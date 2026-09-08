@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' blob: https://api.github.com; media-src 'self' blob:; frame-src https://platform.twitter.com; object-src 'none'; base-uri 'none'; form-action 'none'; upgrade-insecure-requests">
+    <meta name="referrer" content="no-referrer">
+    <meta name="theme-color" content="#070a08">
+    <meta name="description" content="{{description}}">
+    <meta property="og:type" content="article">
+    <meta property="og:title" content="{{title}} — pi-autoresearch">
+    <meta property="og:description" content="{{description}}">
+    <meta property="og:image" content="https://davebcn87.github.io/pi-autoresearch/assets/{{socialImage}}">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="og:image:alt" content="{{socialAlt}}">
+    <meta property="og:url" content="https://davebcn87.github.io/pi-autoresearch/{{slug}}.html">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:image" content="https://davebcn87.github.io/pi-autoresearch/assets/{{socialImage}}">
+    <meta name="twitter:image:alt" content="{{socialAlt}}">
+    <link rel="canonical" href="https://davebcn87.github.io/pi-autoresearch/{{slug}}.html">
+    <link rel="icon" href="assets/og-image.webp">
+    <link rel="stylesheet" href="vendor/asciinema-player.css">
+    <link rel="stylesheet" href="styles.css">
+    <title>{{title}} — pi-autoresearch</title>
+  </head>
+  <body class="docs-page post-page">
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="site-header">
+      <div class="shell header-inner">
+        <a class="wordmark" href="index.html" aria-label="pi-autoresearch home">
+          <img class="wordmark-logo" src="assets/og-image.webp" width="32" height="32" alt="">
+          <span>pi-autoresearch</span>
+        </a>
+        <nav class="nav" aria-label="Post navigation">
+          <a href="index.html">Home</a>
+          <a href="configuration.html">Docs</a>
+          <a class="nav-github" href="https://github.com/davebcn87/pi-autoresearch">GitHub</a>
+        </nav>
+      </div>
+    </header>
+
+    <main id="main" class="post-main shell">
+      <article class="docs-content docs-markdown post-article">
+        <header class="docs-hero post-hero">
+          <p class="eyebrow">{{eyebrow}}</p>
+          <h1>{{title}}</h1>
+          <p>{{intro}}</p>
+        </header>
+
+        <figure class="terminal-figure post-demo">
+          <div class="terminal-player-frame">
+            <div class="terminal-chrome" aria-hidden="true"><span class="terminal-lights"><i></i><i></i><i></i></span><span>pi — autoresearch</span><span class="terminal-shell">zsh</span></div>
+            <div class="terminal-player" data-cast-player data-desktop-cast="recordings/{{cast}}.cast" data-mobile-cast="recordings/{{cast}}-mobile.cast" role="button" tabindex="0" aria-pressed="true" aria-label="Playing interactive terminal recording of an autoresearch agent revisiting a discarded experiment. Press Space or Enter to pause."></div>
+          </div>
+          <figcaption>{{castCaption}}</figcaption>
+        </figure>
+
+        {{content}}
+
+        <footer class="docs-footer-cta post-footer">
+          <p class="eyebrow">Shipped in</p>
+          <p>{{shippedIn}}</p>
+          <a href="index.html">Back to pi-autoresearch →</a>
+        </footer>
+      </article>
+    </main>
+
+    <script src="recordings/casts.js"></script>
+    <script src="vendor/asciinema-player.min.js"></script>
+    <script src="script.js"></script>
+  </body>
+</html>

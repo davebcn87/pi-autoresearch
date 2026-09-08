@@ -2182,6 +2182,81 @@ a:focus-visible,
   border-color: var(--strong-border);
 }
 
+.post-main {
+  max-width: 820px;
+  padding-block: 96px 128px;
+}
+
+.post-hero {
+  padding-bottom: 48px;
+}
+
+.post-hero h1 {
+  max-width: 18ch;
+  font-size: clamp(2.6rem, 5.5vw, 4.25rem);
+  white-space: normal;
+  overflow-wrap: normal;
+}
+
+.post-demo {
+  margin: 0 0 24px;
+}
+
+.post-demo figcaption {
+  max-width: 65ch;
+  margin-top: 16px;
+  color: var(--tertiary);
+  font-size: 13px;
+}
+
+.post-demo figcaption code {
+  color: #67e8ff;
+}
+
+.post-page .docs-section {
+  padding-block: 36px 12px;
+  border-top: 0;
+}
+
+.post-page .docs-section h2 {
+  font-size: clamp(1.6rem, 3vw, 2.2rem);
+}
+
+.post-page .docs-code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.post-page .docs-note {
+  max-width: 65ch;
+  margin: 22px 0 0;
+  padding: 2px 0 2px 20px;
+  border-left: 2px solid #71ff9f;
+  background: none;
+}
+
+.post-page .docs-note p {
+  margin: 0;
+  color: var(--secondary);
+  font-size: 17px;
+  line-height: 1.55;
+}
+
+.post-page .docs-note strong {
+  color: #71ff9f;
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.post-footer .eyebrow {
+  margin: 0;
+}
+
+.post-footer p {
+  margin-top: 12px;
+}
+
 .motion-ready .hero-copy > *,
 .motion-ready .hero-visual {
   opacity: 0;
@@ -2351,6 +2426,10 @@ a:focus-visible,
   .docs-hero h1 {
     font-size: 2.9rem;
     white-space: normal;
+  }
+
+  .post-main {
+    padding-block: 56px 88px;
   }
 
   .docs-section {
