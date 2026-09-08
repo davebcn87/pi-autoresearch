@@ -44,7 +44,7 @@ function buildRevisitingDiscardsPost() {
     .replaceAll('{{slug}}', 'revisiting-discards')
     .replaceAll('{{description}}', escapeHtml('pi-autoresearch now asks the agent to revisit discarded experiments once their assumptions stop holding, and marks intentional retries in the transcript.'))
     .replaceAll('{{socialImage}}', 'social-preview-revisiting-discards.png')
-    .replaceAll('{{socialAlt}}', escapeHtml('A discard is a decision about now, not forever. Run #7 failed while CPUs were busy; run #12 cached that work; run #15 retried and won. A pi terminal shows ↻ Revisiting #7.'))
+    .replaceAll('{{socialAlt}}', escapeHtml('A discard is a decision about now, not forever. Run #7 failed, run #12 freed the CPU, and run #15 tried #7 again and won. A pi terminal shows ↻ Revisiting #7.'))
     .replace('{{eyebrow}}', 'Feature · Revisiting discards')
     .replace('{{intro}}', markdown.renderInline(intro))
     .replaceAll('{{cast}}', 'revisit')
