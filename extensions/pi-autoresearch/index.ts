@@ -2213,6 +2213,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       "log_experiment reports a confidence score after 3+ runs (best improvement as a multiple of the noise floor). ≥2.0× = likely real, <1.0× = within noise. If confidence is below 1.0×, consider re-running the same experiment to confirm before keeping. The score is advisory — it never auto-discards.",
       "If you discover complex but promising optimizations you won't pursue immediately, append them as bullet points to .auto/ideas.md. Don't let good ideas get lost.",
       "Always include the asi parameter. At minimum: {\"hypothesis\": \"what you tried\"}. On discard/crash, also include rollback_reason and next_action_hint. Add any other key/value pairs that capture what you learned — dead ends, surprising findings, error details, bottlenecks. This is the only structured memory that survives reverts.",
+      "When log_experiment records a retry of a previously discarded idea after its assumptions changed, set asi.revisits_run to the earlier run number (a positive integer) and explain what changed in description. Omit revisits_run for new ideas and verification reruns.",
     ],
     parameters: LogParams,
 
@@ -2471,6 +2472,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         setAutoresearchMode(ctx, false);
         ctx.abort();
       } else if (runtime.autoresearchMode) {
+        text += "\n\nBefore choosing the next experiment, consider whether this result or discovery invalidates a previous discard's rollback reason. If so, name what changed and weigh a targeted retry against other candidates. Otherwise, move on; don't retry unchanged hypotheses.";
         const beforeSteer = await fireHook({
           event: "before",
           cwd: workDir,
@@ -2566,6 +2568,11 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
           parts.push(`${name}=${formatNum(value, def?.unit ?? "")}`);
         }
         text += theme.fg("dim", `  ${parts.join(" ")}`);
+      }
+
+      const revisitsRun = exp.asi?.revisits_run;
+      if (typeof revisitsRun === "number" && Number.isInteger(revisitsRun) && revisitsRun > 0) {
+        text += "\n" + theme.fg("accent", `↻ Revisiting #${revisitsRun}`);
       }
 
       return new Text(text, 0, 0);

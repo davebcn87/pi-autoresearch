@@ -3,6 +3,10 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+### Added
+- After every logged experiment, `log_experiment` now asks the agent to check whether the latest result invalidates a previous discard's rollback reason before choosing the next experiment. Ideas discarded because "X was the bottleneck" get a second look once X stops being the bottleneck.
+- Intentional retries can be annotated with `asi.revisits_run: <run number>`; the transcript then shows a `↻ Revisiting #N` line under the logged result so a retry is distinguishable from the agent forgetting a failure.
+- The `.auto/prompt.md` template's "What's Been Tried" section now asks for the conditions that would justify revisiting a discarded idea, so that knowledge survives compaction.
 
 ## [1.7.0] - 2026-08-31
 

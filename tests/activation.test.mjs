@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { visibleWidth } from "@earendil-works/pi-tui";
 
 import autoresearchExtension, {
   shouldAutoActivateAutoresearch,
@@ -15,6 +16,7 @@ const AUTORESEARCH_TOOLS = ["init_experiment", "log_experiment", "run_experiment
 function createHarness({ cwd, branch = [], initialActiveTools = [] }) {
   const commands = new Map();
   const handlers = new Map();
+  const tools = new Map();
   const widgets = [];
   const notifications = [];
   const appendedEntries = [];
@@ -29,7 +31,12 @@ function createHarness({ cwd, branch = [], initialActiveTools = [] }) {
     appendEntry(customType, data) {
       appendedEntries.push({ customType, data });
     },
-    registerTool() {},
+    registerTool(tool) {
+      tools.set(tool.name, tool);
+    },
+    async exec() {
+      return { code: 0, stdout: "", stderr: "" };
+    },
     registerCommand(name, command) {
       commands.set(name, command);
     },
@@ -75,6 +82,7 @@ function createHarness({ cwd, branch = [], initialActiveTools = [] }) {
     ctx,
     notifications,
     sentMessages,
+    tools,
     widgets,
     activeTools: () => activeTools,
     aborted: () => aborted,
@@ -392,6 +400,79 @@ test("/autoresearch clear turns off, deletes the log, and records a manual off d
     assert.equal(harness.appendedEntries[0].data.workDir, await realpath(cwd));
   } finally {
     await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+for (const status of ["keep", "discard", "crash", "checks_failed"]) {
+  for (const limitReached of [false, true]) {
+    test(`log_experiment ${status} ${limitReached ? "stops without" : "includes"} the discard reminder`, async () => {
+      const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-reminder-"));
+      try {
+        await writeSameCwdLog(cwd);
+        if (limitReached) {
+          await writeFile(join(cwd, ".auto", "config.json"), JSON.stringify({ maxIterations: 2 }));
+        }
+        const harness = createHarness({ cwd });
+        await harness.handlers.get("session_start")({}, harness.ctx);
+
+        const result = await harness.tools.get("log_experiment").execute("test", {
+          commit: "abcdef0",
+          metric: 9,
+          status,
+          description: "test experiment",
+          metrics: {},
+          asi: { hypothesis: "test hypothesis", revisits_run: 1 },
+        }, undefined, undefined, harness.ctx);
+        const text = result.content[0].text;
+        const rendered = harness.tools.get("log_experiment").renderResult(
+          result, { expanded: false }, { fg: (_color, text) => text },
+        ).render(100).join("\n");
+        assert.match(rendered, /↻ Revisiting #1/);
+        assert.equal(result.details.experiment.asi.revisits_run, 1);
+
+        assert.equal(harness.aborted(), limitReached);
+        if (limitReached) {
+          assert.match(text, /STOP the experiment loop now/);
+          assert.doesNotMatch(text, /previous discard/);
+        } else {
+          assert.match(text, /invalidates a previous discard's rollback reason/);
+          assert.match(text, /weigh a targeted retry against other candidates/);
+          assert.match(text, /don't retry unchanged hypotheses/);
+        }
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    });
+  }
+}
+
+test("log_experiment leaves ordinary results unchanged and ignores malformed revisit annotations", () => {
+  const harness = createHarness({ cwd: "/unused" });
+  const { details } = staleLogExperimentEntry().message;
+  const render = (asi) => harness.tools.get("log_experiment").renderResult({
+    content: [],
+    details: { ...details, experiment: { ...details.state.results[0], asi } },
+  }, { expanded: false }, { fg: (_color, text) => text }).render(100);
+  const ordinaryResult = render(undefined);
+
+  assert.doesNotMatch(ordinaryResult.join("\n"), /Revisiting/);
+  for (const revisits_run of [undefined, null, "1", 0, -1, 1.5, true]) {
+    assert.deepEqual(render({ revisits_run }), ordinaryResult);
+  }
+});
+
+test("log_experiment revisit label wraps within narrow terminal widths", () => {
+  const harness = createHarness({ cwd: "/unused" });
+  const { details } = staleLogExperimentEntry().message;
+  const component = harness.tools.get("log_experiment").renderResult({
+    content: [],
+    details: { ...details, experiment: { ...details.state.results[0], asi: { revisits_run: 5 } } },
+  }, { expanded: false }, { fg: (_color, text) => text });
+
+  for (const width of [20, 80]) {
+    const lines = component.render(width);
+    assert.match(lines.join("\n"), /↻ Revisiting #5/);
+    assert.ok(lines.every((line) => visibleWidth(line) <= width));
   }
 });
 
