@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.8.1] - 2026-09-08
+
 ### Fixed
 
 - `/autoresearch <goal>` without a `.auto/prompt.md` sent the literal text `/skill:autoresearch-create …` to the model instead of the skill's contents, because `pi.sendUserMessage()` does not expand skill commands by default. Models would reply with things like `Unknown command: /skill:autoresearch-create` (#93). The kickoff is now sent with `expandPromptTemplates: true` (pi ≥ 0.84.2).
