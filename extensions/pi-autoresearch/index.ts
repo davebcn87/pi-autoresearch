@@ -1220,12 +1220,13 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     };
   };
 
+  // Without `expandPromptTemplates` a `/skill:<name>` kickoff reaches the model as literal text.
   const sendWhenReady = (ctx: ExtensionContext, message: string): void => {
     if (ctx.isIdle()) {
-      pi.sendUserMessage(message);
+      pi.sendUserMessage(message, { expandPromptTemplates: true });
       return;
     }
-    pi.sendUserMessage(message, { deliverAs: "followUp" });
+    pi.sendUserMessage(message, { expandPromptTemplates: true, deliverAs: "followUp" });
   };
 
   const hasAutoresearchRules = (ctx: ExtensionContext): boolean =>
@@ -3090,8 +3091,8 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       runtime.autoResumeTurns = 0;
       const rulesLoaded = hasAutoresearchRules(ctx);
       // No .auto/prompt.md yet — load the create skill so the agent follows the
-      // setup guidelines. `/skill:<name>` is expanded to the full SKILL.md by
-      // pi's input pipeline (requires `enableSkillCommands`), and trailing args
+      // setup guidelines. `/skill:<name>` is expanded to the full SKILL.md when
+      // sent with `expandPromptTemplates` (see sendWhenReady), and trailing args
       // are appended as the session goal. Must be sent as its own message that
       // STARTS with `/skill:` so expansion triggers — don't prepend hook output.
       const kickoff = rulesLoaded
