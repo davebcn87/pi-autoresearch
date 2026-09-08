@@ -437,7 +437,9 @@ for (const status of ["keep", "discard", "crash", "checks_failed"]) {
         } else {
           assert.match(text, /invalidates a previous discard's rollback reason/);
           assert.match(text, /weigh a targeted retry against other candidates/);
-          assert.match(text, /don't retry unchanged hypotheses/);
+          assert.match(text, /Don't revive a discarded idea without a changed assumption/);
+          assert.match(text, /Verification reruns to resolve measurement noise are separate/);
+          assert.doesNotMatch(text, /don't retry unchanged hypotheses/);
         }
       } finally {
         await rm(cwd, { recursive: true, force: true });

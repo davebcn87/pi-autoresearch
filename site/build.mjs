@@ -14,6 +14,7 @@ prepareBuildDirectory();
 copyPublicFiles();
 await import('./scripts/generate-casts.mjs');
 buildConfigurationPage();
+buildRevisitingDiscardsPost();
 copyPlayerAssets();
 
 function prepareBuildDirectory() {
@@ -26,18 +27,40 @@ function copyPublicFiles() {
 }
 
 function buildConfigurationPage() {
-  const source = readFileSync(resolve(contentDirectory, 'configuration.md'), 'utf8');
-  const {title, intro, body} = parseDocument(source);
-  const markdown = createMarkdownRenderer();
+  const {title, intro, body, markdown} = loadMarkdownDocument('configuration.md');
   const headings = sectionHeadings(markdown.parse(body, {}));
-  const renderedContent = wrapSections(markdown.render(body));
-  const template = readFileSync(resolve(siteDirectory, 'templates/configuration.html'), 'utf8');
-  const output = template
+  const output = readTemplate('configuration.html')
     .replaceAll('{{title}}', escapeHtml(title))
     .replace('{{intro}}', markdown.renderInline(intro))
     .replace('{{toc}}', renderTableOfContents(headings))
-    .replace('{{content}}', renderedContent);
+    .replace('{{content}}', wrapSections(markdown.render(body)));
   writeFileSync(resolve(buildDirectory, 'configuration.html'), output);
+}
+
+function buildRevisitingDiscardsPost() {
+  const {title, intro, body, markdown} = loadMarkdownDocument('revisiting-discards.md');
+  const output = readTemplate('post.html')
+    .replaceAll('{{title}}', escapeHtml(title))
+    .replaceAll('{{slug}}', 'revisiting-discards')
+    .replaceAll('{{description}}', escapeHtml('pi-autoresearch now asks the agent to revisit discarded experiments once their assumptions stop holding, and marks intentional retries in the transcript.'))
+    .replaceAll('{{socialImage}}', 'social-preview-revisiting-discards.png')
+    .replaceAll('{{socialAlt}}', escapeHtml('A pi terminal showing a kept log_experiment result followed by the line ↻ Revisiting #7'))
+    .replace('{{eyebrow}}', 'Feature · Revisiting discards')
+    .replace('{{intro}}', markdown.renderInline(intro))
+    .replaceAll('{{cast}}', 'revisit')
+    .replace('{{castCaption}}', 'Run #7 is discarded, run #12 changes the assumption behind it, and run #15 goes back — marked <code>↻ Revisiting #7</code>.')
+    .replace('{{shippedIn}}', 'pi-autoresearch 1.8.0 — see the <a href="https://github.com/davebcn87/pi-autoresearch/blob/main/CHANGELOG.md">changelog</a>.')
+    .replace('{{content}}', wrapSections(markdown.render(body)));
+  writeFileSync(resolve(buildDirectory, 'revisiting-discards.html'), output);
+}
+
+function loadMarkdownDocument(filename) {
+  const source = readFileSync(resolve(contentDirectory, filename), 'utf8');
+  return {...parseDocument(source), markdown: createMarkdownRenderer()};
+}
+
+function readTemplate(filename) {
+  return readFileSync(resolve(siteDirectory, 'templates', filename), 'utf8');
 }
 
 function parseDocument(source) {
@@ -51,7 +74,7 @@ function parseDocument(source) {
 }
 
 function createMarkdownRenderer() {
-  return new MarkdownIt({html: false, linkify: true, typographer: true})
+  return new MarkdownIt({html: false, linkify: true})
     .use(markdownItAnchor, {slugify: sectionId});
 }
 

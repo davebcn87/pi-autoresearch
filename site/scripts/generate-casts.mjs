@@ -32,12 +32,24 @@ const experimentRuns = [
   {commit: 'c7a209e', metric: '8.47s', status: 'keep', description: 'Cache transformed setup files', mobileDescription: 'Cache transforms'},
 ];
 
+const revisitRuns = {
+  discard: {run: 7, wall: '33.9s', metric: '33.85s', best: '31.40s', description: 'Build pages in parallel with 8 workers.', short: 'Parallel pages ×8'},
+  shift: {run: 12, wall: '22.1s', metric: '22.10s', best: '22.10s', description: 'Cache resized images between builds.', short: 'Cache resized images', commit: '9c1e4a2'},
+  revisit: {run: 15, wall: '14.3s', metric: '14.30s', best: '14.30s', description: 'Retry parallel pages with cached images.', short: 'Retry parallel pages', commit: 'd47b0f3', revisits: 7},
+};
+const revisitBaselineSeconds = 48.2;
+const editorRows = 5;
+const testsBranch = {compact: 'autoresearch/tests', full: 'autoresearch/optimize-tests'};
+const revisitBranch = {compact: 'autoresearch/build', full: 'autoresearch/optimize-build'};
+
 mkdirSync(recordingsDirectory, {recursive: true});
 writeExperimentCast('experiment.cast', 112, desktopExperimentScreen);
 writeExperimentCast('experiment-compact.cast', 72, mobileExperimentScreen);
 writeExperimentCast('experiment-mobile.cast', 42, narrowExperimentScreen);
 writeFinalizeCast('finalize.cast', 72, 20);
 writeFinalizeCast('finalize-mobile.cast', 44, 24);
+writeRevisitCast('revisit.cast', 100, 39);
+writeRevisitCast('revisit-mobile.cast', 44, 39);
 writeEmbeddedCasts();
 
 function writeEmbeddedCasts() {
@@ -188,6 +200,137 @@ function writeFinalizeCast(filename, columns, rows) {
   cast.save(resolve(recordingsDirectory, filename));
 }
 
+// ---------------------------------------------------------------------------
+// Revisiting discards: run #7 is discarded, #12 changes its assumption, #15 goes back.
+// ---------------------------------------------------------------------------
+
+function writeRevisitCast(filename, columns, rows) {
+  const cast = createCast(columns, rows);
+  const compact = columns < 60;
+  const screen = (stage) => piApplicationScreen(revisitTranscript(stage, compact, columns), '', columns, rows, revisitBranch);
+
+  cast.output(0.4, screen('discarded'));
+  cast.output(2.2, screen('shifted'));
+  cast.output(1.8, screen('reasoning'));
+  cast.output(1.6, screen('running'));
+  cast.output(0.6, screen('running-2'));
+  cast.output(0.6, screen('running'));
+  cast.output(0.6, screen('revisited'));
+  holdFinalFrame(cast, 5);
+  assertRevisitCastFits(columns, rows, compact);
+  cast.save(resolve(recordingsDirectory, filename));
+}
+
+function revisitTranscript(stage, compact, columns) {
+  const blocks = [loggedResult(revisitRuns.discard, 'discard', compact)];
+  blocks.push(assistantNote(compact
+    ? ['Image resizing already keeps every core', 'busy. Extra workers just add contention.']
+    : ['Image resizing already keeps every core busy, so extra workers just add contention.', 'Staying sequential.']));
+  if (stage === 'discarded') return joinBlocks(blocks, revisitWidget(['discard'], compact, columns));
+
+  blocks.push(`${ansi.dim}… 4 experiments later${ansi.reset}`);
+  blocks.push(loggedResult(revisitRuns.shift, 'keep', compact));
+  if (stage === 'shifted') return joinBlocks(blocks, revisitWidget(['discard', 'shift'], compact, columns));
+
+  blocks.push(assistantNote(compact
+    ? ['Does #12 invalidate an earlier discard?', 'Yes — #7 failed because every core was', 'busy. Cached images leave the CPU idle,', 'so I\'m retrying parallel page builds.']
+    : ['Does #12 invalidate an earlier discard? Yes: #7 was rejected because every core was busy.', 'Cached images leave the CPU mostly idle, so that rollback reason no longer holds.', 'Retrying parallel page builds.']));
+  if (stage === 'reasoning') return joinBlocks(blocks, revisitWidget(['discard', 'shift'], compact, columns));
+
+  if (stage.startsWith('running')) {
+    const spinner = stage === 'running' ? '⠋' : '⠙';
+    blocks.push(`${ansi.yellow}◆${ansi.reset} ${ansi.bold}run_experiment${ansi.reset} ${ansi.dim}pnpm build${ansi.reset}\r\n${ansi.blue}${spinner}${ansi.reset} ${ansi.dim}Working…${ansi.reset}`);
+    return joinBlocks(blocks, revisitWidget(['discard', 'shift'], compact, columns));
+  }
+
+  blocks.push(`${ansi.green}✓${ansi.reset} ${ansi.bold}run_experiment${ansi.reset} ${ansi.dim}pnpm build${ansi.reset}\r\n${ansi.green}✅ wall: ${revisitRuns.revisit.wall}, build_time: ${revisitRuns.revisit.metric}${ansi.reset}`);
+  blocks.push(loggedResult(revisitRuns.revisit, 'keep', compact));
+  return joinBlocks(blocks, revisitWidget(['discard', 'shift', 'revisit'], compact, columns));
+}
+
+// The player clamps idle gaps to 1.5s, so a long hold needs several short no-op frames.
+function holdFinalFrame(cast, seconds) {
+  for (let elapsed = 0; elapsed < seconds; elapsed += 1.25) cast.output(1.25, '');
+}
+
+function joinBlocks(blocks, widget) {
+  return `${blocks.join('\r\n\r\n')}\r\n\r\n${widget}`;
+}
+
+function assistantNote(lines) {
+  return lines.map((line) => `${ansi.white}${line}${ansi.reset}`).join('\r\n');
+}
+
+/** Mirrors log_experiment's renderCall + renderResult output, including the revisit line. */
+function loggedResult(run, status, compact) {
+  const statusColor = status === 'keep' ? ansi.green : ansi.yellow;
+  const icon = status === 'keep' ? '✓' : '–';
+  const call = `${ansi.bold}log_experiment${ansi.reset} ${statusColor}${status}${ansi.reset} ${ansi.dim}${compact ? run.short : run.description}${ansi.reset}`;
+  const result = compact
+    ? `${statusColor}${icon}${ansi.reset} ${ansi.blue}#${run.run}${ansi.reset} ${ansi.dim}(${ansi.reset}${ansi.yellow}${run.metric}${ansi.reset}${ansi.dim})${ansi.reset} ${run.short}`
+    : `${statusColor}${icon}${ansi.reset} ${ansi.blue}#${run.run}${ansi.reset} ${ansi.dim}(${ansi.reset}${ansi.yellow}wall: ${run.wall}${ansi.dim}, ${ansi.reset}${ansi.yellow}build_time: ${run.metric}${ansi.reset}${ansi.dim})${ansi.reset} ${run.description} ${ansi.dim}│${ansi.reset} ${ansi.yellow}★ best: ${run.best}${ansi.reset}`;
+  const badge = run.revisits ? `\r\n${ansi.blue}↻ Revisiting #${run.revisits}${ansi.reset}` : '';
+  return `${call}\r\n${result}${badge}`;
+}
+
+function revisitWidget(visible, compact, columns) {
+  const runs = visible.map((key) => revisitRuns[key]);
+  const latest = runs.at(-1);
+  const kept = runs.filter((run) => run.commit).length + 4;
+  const total = latest.run;
+  const improvement = ((Number.parseFloat(latest.best) - revisitBaselineSeconds) / revisitBaselineSeconds * 100).toFixed(1);
+  const title = revisitTitle(columns);
+  const summary = compact
+    ? `${ansi.dim}Runs:${ansi.reset} ${total}  ${ansi.green}${kept} kept${ansi.reset}  ${ansi.yellow}${total - kept} discarded${ansi.reset}\r\n${ansi.dim}Best:${ansi.reset} ${ansi.yellow}${ansi.bold}${latest.best}${ansi.reset} ${ansi.green}(${improvement}%)${ansi.reset}`
+    : `  ${ansi.dim}Runs:${ansi.reset} ${total}  ${ansi.green}${kept} kept${ansi.reset}  ${ansi.yellow}${total - kept} discarded${ansi.reset}\r\n  ${ansi.dim}Baseline: ★ build_time: ${revisitBaselineSeconds.toFixed(2)}s #1${ansi.reset}\r\n  ${ansi.dim}Progress:${ansi.reset} ${ansi.yellow}${ansi.bold}★ build_time: ${latest.best}${ansi.reset}${ansi.dim} #${runs.findLast((run) => run.commit)?.run ?? 6}${ansi.reset}${ansi.green} (${improvement}%)${ansi.reset}`;
+  return `${title}\r\n${summary}\r\n\r\n${revisitTable(runs, compact, columns)}`;
+}
+
+function revisitTitle(columns) {
+  const title = columns < 60 ? ' 🔬 autoresearch: site build ' : ' 🔬 autoresearch: website build time ';
+  const remaining = Math.max(4, columns - 4 - title.length);
+  return `${ansi.dim}───${ansi.reset}${ansi.blue}${title}${ansi.reset}${ansi.dim}${'─'.repeat(remaining)}${ansi.reset}`;
+}
+
+function revisitTable(runs, compact, columns) {
+  const indent = compact ? '' : '  ';
+  const header = compact
+    ? `${ansi.dim}#   build_time status  description${ansi.reset}`
+    : `${indent}${ansi.dim}#   commit   ${ansi.reset}${ansi.yellow}${ansi.bold}★ build_time ${ansi.reset}${ansi.dim}status    description${ansi.reset}`;
+  const rule = `${indent}${ansi.dim}${'─'.repeat(columns - 4)}${ansi.reset}`;
+  const earlier = `${indent}${ansi.dim}… 6 earlier runs${ansi.reset}`;
+  const rows = runs.map((run) => revisitRow(run, compact, indent));
+  return [header, rule, earlier, ...rows].join('\r\n');
+}
+
+function revisitRow(run, compact, indent) {
+  const status = run.commit ? 'keep' : 'discard';
+  const statusColor = run.commit ? ansi.green : ansi.yellow;
+  const number = String(run.run).padEnd(4);
+  if (compact) {
+    return `${ansi.dim}${number}${ansi.reset}${ansi.bold}${run.metric.padEnd(11)}${ansi.reset}${statusColor}${status.padEnd(8)}${ansi.reset}${ansi.dim}${run.short}${ansi.reset}`;
+  }
+  const commit = (run.commit ?? '—').padEnd(9);
+  return `${indent}${ansi.dim}${number}${ansi.reset}${ansi.blue}${commit}${ansi.reset}${ansi.bold}${run.metric.padEnd(13)}${ansi.reset}${statusColor}${status.padEnd(10)}${ansi.reset}${ansi.dim}${run.description}${ansi.reset}`;
+}
+
+function assertRevisitCastFits(columns, rows, compact) {
+  const lines = revisitTranscript('revisited', compact, columns).split('\r\n');
+  const overflowing = lines.find((line) => visibleLength(line) > columns);
+  if (overflowing) throw new Error(`revisit cast line overflows ${columns} columns: ${JSON.stringify(stripAnsi(overflowing))}`);
+  const available = rows - editorRows;
+  if (lines.length > available) throw new Error(`revisit cast needs ${lines.length} rows but only ${available} are available above the editor`);
+}
+
+function visibleLength(line) {
+  return [...stripAnsi(line)].length;
+}
+
+function stripAnsi(line) {
+  // eslint-disable-next-line no-control-regex
+  return line.replace(/\u001b\[[0-9;?]*[A-Za-z]/g, '');
+}
+
 function createCast(columns, rows) {
   const events = [];
   const header = {
@@ -220,16 +363,13 @@ function typePiPrompt(cast, text, columns, rows) {
   }
 }
 
-function piApplicationScreen(content, input, columns, rows) {
+function piApplicationScreen(content, input, columns, rows, branch = testsBranch) {
   const contentLines = content ? content.split('\r\n').length : 0;
-  const editorLines = 5;
-  const paddingRows = Math.max(0, rows - editorLines - contentLines);
+  const paddingRows = Math.max(0, rows - editorRows - contentLines);
   const padding = '\r\n'.repeat(paddingRows);
   const separator = `${ansi.purple}${'─'.repeat(columns)}${ansi.reset}`;
   const compact = columns < 60;
-  const project = compact
-    ? '~/project (autoresearch/tests)'
-    : '~/project (autoresearch/optimize-tests)';
+  const project = `~/project (${compact ? branch.compact : branch.full})`;
   const status = compact
     ? '0.0%/200k (auto)        opus-4-8 • high'
     : '0.0%/200k (auto)                  (anthropic) claude-opus-4-8 • high';
