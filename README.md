@@ -23,6 +23,15 @@ Inspired by [karpathy/autoresearch](https://github.com/karpathy/autoresearch). W
 
 ```bash
 pi install npm:pi-autoresearch
+pi
+```
+
+Or load the package for one session only with `pi -e npm:pi-autoresearch`.
+
+Then start the loop inside pi:
+
+```text
+/autoresearch optimize unit test runtime, monitor correctness
 ```
 
 ## What's included
@@ -44,6 +53,7 @@ pi install npm:pi-autoresearch
 
 | Subcommand | Description |
 |------------|-------------|
+| `/autoresearch` | Show help without activating autoresearch mode. |
 | `/autoresearch <text>` | Enter autoresearch mode. If `.auto/prompt.md` exists, resumes the loop with `<text>` as context. Otherwise, sets up a new session. |
 | `/autoresearch off` | Leave autoresearch mode. Stops auto-resume and clears runtime state but keeps `.auto/log.jsonl` intact. |
 | `/autoresearch clear` | Delete `.auto/log.jsonl`, reset all state, and turn autoresearch mode off. Use this for a clean start. |
@@ -161,9 +171,11 @@ Then `/reload` in pi.
 
 ### 1. Start autoresearch
 
+```text
+/autoresearch optimize unit test runtime, monitor correctness
 ```
-/skill:autoresearch-create
-```
+
+This activates autoresearch mode and makes the experiment tools available. If `.auto/prompt.md` does not exist, it also loads the `autoresearch-create` skill. Calling `/skill:autoresearch-create` directly does not activate the mode, so the tools remain unavailable in a fresh session.
 
 The agent asks about your goal, command, metric, and files in scope — or infers them from context. It then creates a branch, writes `.auto/prompt.md` and `.auto/measure.sh`, runs the baseline, and starts looping immediately.
 
