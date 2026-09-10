@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Security
+
+- Bumped `@earendil-works/pi-coding-agent` dev dependency from `^0.74.0` to `^0.85.1` to pick up the fixes for GHSA-jfgx-wxx8-mp94, GHSA-r95r-rj6r-c39x, GHSA-7v5m-pr3q-6453, and GHSA-mqxh-6gq7-558m. Regenerating both lockfiles also pulls in patched `protobufjs`, `undici`, and `brace-expansion` transitives.
+
 ## [1.8.1] - 2026-09-08
 
 ### Fixed
