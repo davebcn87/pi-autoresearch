@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Optional outside research advisor configured through `.auto/research.json`. The advisor receives current source and captured experiment outcomes, including secondary costs, and can suggest useful directions or stop the loop. `/autoresearch ideas` requests advice on demand.
+
 ## [1.8.1] - 2026-09-08
 
 ### Fixed
