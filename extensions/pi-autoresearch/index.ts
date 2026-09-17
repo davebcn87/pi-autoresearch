@@ -51,6 +51,7 @@ import {
   autoresearchSummaryPathsFor,
   buildAutoresearchCompactionSummary,
 } from "./compaction.ts";
+import { CONSULTANT_MODEL, ResearchSession, researchModelCall, type ResearchResult } from "./research.ts";
 import { resolveAutoresearchShortcuts, SHORTCUT_ACTIONS } from "./shortcuts.ts";
 import { sessionFilePath, sessionFileCandidates, ensureParentDir, AUTO_DIR } from "./paths.ts";
 
@@ -69,6 +70,7 @@ const EXPERIMENT_MAX_BYTES = 4 * 1024; // 4KB
  * The agent decides what to record. Any key/value pair is valid.
  */
 interface ASI {
+  advisor_result?: ResearchResult;
   [key: string]: unknown;
 }
 
@@ -176,6 +178,9 @@ interface LogDetails {
 }
 
 interface AutoresearchRuntime {
+  research?: ResearchSession;
+  advisorStopped?: boolean;
+  lastAdvisorRun?: ResearchResult;
   autoresearchMode: boolean;
   experimentsThisSession: number;
   autoResumeTurns: number;
@@ -194,6 +199,7 @@ interface AutoresearchRuntime {
 // ---------------------------------------------------------------------------
 
 const RunParams = Type.Object({
+  approach: Type.Optional(Type.String({ description: "Short name for the idea family, used by the outside advisor" })),
   command: Type.String({
     description:
       "Shell command to run (e.g. 'pnpm test:vitest', 'uv run train.py')",
@@ -1089,15 +1095,39 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   const getRuntime = (ctx: ExtensionContext): AutoresearchRuntime =>
     runtimeStore.ensure(getSessionKey(ctx));
 
+  const ensureResearch = (ctx: ExtensionContext): ResearchSession | undefined => {
+    const runtime = getRuntime(ctx);
+    const workDir = resolveWorkDir(ctx.cwd);
+    if (!runtime.research && !fs.existsSync(sessionFilePath(workDir, "research"))) return undefined;
+    const research = runtime.research ?? new ResearchSession(workDir);
+    if (research.cwd !== workDir) throw new Error("Research working directory changed during the session");
+    if (ctx.model && CONSULTANT_MODEL === `${ctx.model.provider}/${ctx.model.id}`) {
+      throw new Error(`The experimenter model must differ from the consultant model ${CONSULTANT_MODEL}`);
+    }
+    runtime.research = research;
+    return research;
+  };
+
   // Registering through this gates the tool, so a new one can't slip in ungated.
   const gatedToolNames = new Set<string>();
   const registerGatedTool = (tool: Parameters<typeof pi.registerTool>[0]): void => {
     gatedToolNames.add(tool.name);
-    pi.registerTool(tool);
+    pi.registerTool({ ...tool, execute: async (...args) => {
+      if (getRuntime(args[4]).advisorStopped) {
+        return { content: [{ type: "text", text: "The outside advisor stopped this search. Report the accepted result." }], details: {}, isError: true };
+      }
+      return tool.execute(...args);
+    } });
   };
 
   // The one place mode flips: gated tools follow the flag, never drifting from it.
   const setAutoresearchMode = (ctx: ExtensionContext, enabled: boolean): void => {
+    if (!enabled) {
+      getRuntime(ctx).research?.cancel();
+      getRuntime(ctx).research = undefined;
+      getRuntime(ctx).lastAdvisorRun = undefined;
+    }
+    if (enabled) getRuntime(ctx).advisorStopped = false;
     getRuntime(ctx).autoresearchMode = enabled;
     const activeTools = new Set(pi.getActiveTools()); // setActiveTools replaces the whole set
     for (const tool of gatedToolNames) {
@@ -1286,10 +1316,11 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
   const autoresearchHelp = () =>
     [
-      "Usage: /autoresearch [off|clear|export|dashboard|<text>]",
+      "Usage: /autoresearch [off|clear|export|dashboard|ideas|<text>]",
       "",
       "<text> enters autoresearch mode and starts or resumes the loop.",
       "off leaves autoresearch mode.",
+      "ideas asks the configured outside advisor for suggestions or a stop decision.",
       "clear deletes the session log (.auto/log.jsonl) and turns autoresearch mode off.",
       "export opens a local live dashboard for the session log in your browser.",
       "dashboard opens the fullscreen dashboard overlay in the terminal.",
@@ -1556,6 +1587,10 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       extra += `\n\n💡 Ideas backlog exists at ${ideasPath} — check it for promising experiment paths. Prune stale entries.`;
     }
 
+    if (fs.existsSync(sessionFilePath(workDir, "research"))) {
+      extra += "\nAn outside advisor is configured. It proposes ideas after the baseline and repeated unsuccessful experiments. Use approach names to track ideas. Follow its stop decision and report the accepted result.";
+    }
+
     return {
       systemPrompt: event.systemPrompt + extra,
     };
@@ -1581,6 +1616,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const runtime = getRuntime(ctx);
+      runtime.lastAdvisorRun = undefined;
       const state = runtime.state;
 
       // Validate working directory exists
@@ -1701,6 +1737,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       const runtime = getRuntime(ctx);
+      runtime.lastAdvisorRun = undefined;
       const state = runtime.state;
 
       // Validate working directory exists
@@ -1984,6 +2021,13 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         ? Object.fromEntries(parsedMetricMap)
         : null;
       const parsedPrimary = parsedMetricMap.get(state.metricName) ?? null;
+      runtime.lastAdvisorRun = {
+        approach: params.approach ?? "unspecified", status: "discard",
+        metric: exitCode === 0 && !timedOut ? parsedPrimary : null,
+        metrics: Object.fromEntries([...parsedMetricMap].filter(([name]) => name !== state.metricName)),
+        checksPassed: checksPass,
+        ...(!passed ? { failure: (exitCode !== 0 || timedOut ? "Benchmark failed: " + output.slice(-1800) : "Checks failed: " + checksOutput.slice(-1800)) } : {}),
+      };
 
       const details: RunDetails = {
         command: params.command,
@@ -2274,9 +2318,12 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         }
       }
 
-      // ASI: agent-supplied free-form diagnostics
-      const mergedASI = (params.asi && Object.keys(params.asi).length > 0)
-        ? params.asi as ASI
+      // Keep observed advisor context separate from the agent's diagnostics.
+      const observed = fs.existsSync(sessionFilePath(workDir, "research")) ? runtime.lastAdvisorRun : undefined;
+      const diagnostics = { ...params.asi } as ASI;
+      delete diagnostics.advisor_result;
+      const mergedASI = observed || Object.keys(diagnostics).length > 0
+        ? { ...diagnostics, ...(observed ? { advisor_result: observed } : {}) }
         : undefined;
 
       const experiment: ExperimentResult = {
@@ -2461,6 +2508,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       });
       if (afterSteer) pi.sendUserMessage(afterSteer, { deliverAs: "steer" });
 
+      runtime.lastAdvisorRun = undefined;
       const wallClockSeconds = runtime.lastRunDuration;
       runtime.runningExperiment = null;
       runtime.lastRunChecks = null;
@@ -2473,15 +2521,32 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         setAutoresearchMode(ctx, false);
         ctx.abort();
       } else if (runtime.autoresearchMode) {
-        text += "\n\nBefore choosing the next experiment, consider whether this result or discovery invalidates a previous discard's rollback reason. If so, name what changed and weigh a targeted retry against other candidates. Otherwise, move on. Don't revive a discarded idea without a changed assumption. Verification reruns to resolve measurement noise are separate.";
-        const beforeSteer = await fireHook({
-          event: "before",
-          cwd: workDir,
-          next_run: state.results.length + 1,
-          last_run: jsonlEntry,
-          session: buildSessionSnapshot(state),
-        });
-        if (beforeSteer) pi.sendUserMessage(beforeSteer, { deliverAs: "steer" });
+        try {
+          const research = ensureResearch(ctx);
+          const segmentResults = currentResults(state.results, state.currentSegment);
+          let failures = 0;
+          for (const result of [...segmentResults].reverse()) {
+            if (result.status === "keep") break;
+            failures++;
+          }
+          const firstKeep = params.status === "keep" && segmentResults.filter((r) => r.status === "keep").length === 1;
+          if (research && (firstKeep || (failures > 0 && failures % research.config.failureInterval === 0))) {
+            text += `\n${await consultAdvisor(ctx, _signal)}`;
+          }
+        } catch (error) {
+          text += `\nOutside advisor unavailable: ${error instanceof Error ? error.message : String(error)}`;
+        }
+        if (runtime.autoresearchMode) {
+          text += "\n\nBefore choosing the next experiment, consider whether this result or discovery invalidates a previous discard's rollback reason. If so, name what changed and weigh a targeted retry against other candidates. Otherwise, move on. Don't revive a discarded idea without a changed assumption. Verification reruns to resolve measurement noise are separate.";
+          const beforeSteer = await fireHook({
+            event: "before",
+            cwd: workDir,
+            next_run: state.results.length + 1,
+            last_run: jsonlEntry,
+            session: buildSessionSnapshot(state),
+          });
+          if (beforeSteer) pi.sendUserMessage(beforeSteer, { deliverAs: "steer" });
+        }
       }
 
       updateWidget(ctx);
@@ -2579,6 +2644,33 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       return new Text(text, 0, 0);
     },
   });
+
+  async function consultAdvisor(ctx: ExtensionContext, signal?: AbortSignal): Promise<string> {
+    const research = ensureResearch(ctx);
+    if (!research) throw new Error("Configure .auto/research.json first");
+    const state = getRuntime(ctx).state;
+    const results: ResearchResult[] = currentResults(state.results, state.currentSegment).map((r) => {
+      const measured = r.asi?.advisor_result;
+      return {
+        approach: measured?.approach ?? (typeof r.asi?.approach === "string" ? r.asi.approach : "unspecified"),
+        status: r.status, metric: measured ? measured.metric : null,
+        metrics: measured?.metrics ?? {},
+        checksPassed: measured?.checksPassed ?? null,
+        ...(measured?.failure ? { failure: measured.failure } : {}),
+      };
+    });
+    const advice = await research.ideate(researchModelCall(ctx), results, { name: state.metricName, direction: state.bestDirection }, signal);
+    if (advice.stop) {
+      const runtime = getRuntime(ctx);
+      runtime.advisorStopped = true;
+      cancelPendingResume(runtime);
+      recordAutoresearchActivation(resolveWorkDir(ctx.cwd), false);
+      setAutoresearchMode(ctx, false);
+      updateWidget(ctx);
+      return `${advice.text}\n\nSTOP the experiment loop now and report the accepted result.`;
+    }
+    return advice.text;
+  }
 
   // -----------------------------------------------------------------------
   // Fullscreen scrollable dashboard overlay
@@ -3039,6 +3131,18 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
       if (command === "dashboard") {
         await openFullscreenDashboard(ctx);
+        return;
+      }
+
+      if (command === "ideas") {
+        try {
+          const research = ensureResearch(ctx);
+          if (!research) throw new Error("Configure .auto/research.json first");
+          ctx.ui.notify("The outside advisor is working", "info");
+          ctx.ui.notify(await consultAdvisor(ctx), "info");
+        } catch (error) {
+          ctx.ui.notify(`Independent ideation failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+        }
         return;
       }
 

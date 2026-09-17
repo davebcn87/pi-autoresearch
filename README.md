@@ -21,6 +21,8 @@ Inspired by [karpathy/autoresearch](https://github.com/karpathy/autoresearch). W
 
 ## Quick start
 
+For an outside advisor that uses measured results to suggest useful experiments or stop an exhausted search, see [Research advisor](INDEPENDENT_RESEARCH.md). Approach names track prior ideas without blocking useful variants.
+
 ```bash
 pi install npm:pi-autoresearch
 pi
@@ -57,6 +59,7 @@ Then start the loop inside pi:
 | `/autoresearch <text>` | Enter autoresearch mode. If `.auto/prompt.md` exists, resumes the loop with `<text>` as context. Otherwise, sets up a new session. |
 | `/autoresearch off` | Leave autoresearch mode. Stops auto-resume and clears runtime state but keeps `.auto/log.jsonl` intact. |
 | `/autoresearch clear` | Delete `.auto/log.jsonl`, reset all state, and turn autoresearch mode off. Use this for a clean start. |
+| `/autoresearch ideas` | Ask the configured outside advisor for suggestions or a stop decision. |
 | `/autoresearch export` | Open a live dashboard in your browser. Auto-updates as experiments run. |
 | `/autoresearch dashboard` | Open the fullscreen scrollable dashboard overlay in the terminal. Navigate with `↑`/`↓`/`j`/`k`, `PageUp`/`PageDown`/`u`/`d`, `g`/`G` for top/bottom, `Escape` or `q` to close. |
 

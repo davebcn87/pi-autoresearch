@@ -12,7 +12,7 @@ import * as path from "node:path";
 
 export const AUTO_DIR = ".auto";
 
-export type SessionFileKind = "log" | "prompt" | "ideas" | "checks" | "measure" | "config";
+export type SessionFileKind = "log" | "prompt" | "ideas" | "checks" | "measure" | "config" | "research" | "ideation";
 export type HookStage = "before" | "after";
 
 const CURRENT_HOOKS_DIR = "hooks";
@@ -25,6 +25,8 @@ const SESSION_FILE_NAMES: Record<SessionFileKind, { current: string; legacy: str
   checks: { current: "checks.sh",   legacy: "autoresearch.checks.sh" },
   measure:{ current: "measure.sh",  legacy: "autoresearch.sh" },
   config: { current: "config.json", legacy: "autoresearch.config.json" },
+  research: { current: "research.json", legacy: "autoresearch.research.json" },
+  ideation: { current: "ideation.jsonl", legacy: "autoresearch.ideation.jsonl" },
 };
 
 export interface SessionFileCandidates {
