@@ -23,7 +23,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { truncateTail, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { Text, truncateToWidth, matchesKey, visibleWidth } from "@earendil-works/pi-tui";
+import { Text, truncateToWidth, matchesKey, visibleWidth, type AutocompleteItem } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -1076,13 +1076,10 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   const shortcuts = resolveAutoresearchShortcuts();
 
   const dashboardHintVariants = (): string[] => {
-    if (shortcuts.fullscreenDashboard) {
-      return [
-        `${shortcuts.fullscreenDashboard} fullscreen`,
-        shortcuts.fullscreenDashboard,
-      ];
-    }
-    return ["/autoresearch dashboard fullscreen", "/autoresearch dashboard"];
+    const dashboardCommand = "/autoresearch dashboard";
+    return shortcuts.fullscreenDashboard
+      ? [dashboardCommand, shortcuts.fullscreenDashboard]
+      : [dashboardCommand];
   };
 
   const runtimeStore = createRuntimeStore();
@@ -1294,6 +1291,21 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       ctx.ui.setWidget("autoresearch", undefined);
     }
   };
+
+  const autoresearchArgumentCompletions: AutocompleteItem[] = [
+    { value: "off", label: "off", description: "Leave autoresearch mode" },
+    { value: "clear", label: "clear", description: "Delete the session log and reset state" },
+    { value: "export", label: "export", description: "Open the live browser dashboard" },
+    { value: "dashboard", label: "dashboard", description: "Open the terminal dashboard overlay" },
+  ];
+
+  function getAutoresearchArgumentCompletions(argumentPrefix: string): AutocompleteItem[] | null {
+    const prefix = argumentPrefix.trim().toLowerCase();
+    const matches = autoresearchArgumentCompletions.filter((item) =>
+      item.value.startsWith(prefix),
+    );
+    return matches.length > 0 ? matches : null;
+  }
 
   const autoresearchHelp = () =>
     [
@@ -3050,6 +3062,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
   pi.registerCommand("autoresearch", {
     description: "Start, stop, finalize, clear, export, or open dashboards for autoresearch mode",
+    getArgumentCompletions: getAutoresearchArgumentCompletions,
     handler: async (args, ctx) => {
       const runtime = getRuntime(ctx);
       const trimmedArgs = (args ?? "").trim();

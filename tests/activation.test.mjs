@@ -545,6 +545,20 @@ test("/autoresearch dashboard explains that the overlay requires TUI mode", asyn
   }
 });
 
+test("/autoresearch offers completions for every subcommand", () => {
+  const harness = createHarness({ cwd: "/tmp/pi-autoresearch-completions" });
+  const complete = harness.commands.get("autoresearch").getArgumentCompletions;
+
+  assert.ok(complete);
+  assert.deepEqual(complete("")?.map((item) => item.value), ["off", "clear", "export", "dashboard"]);
+  assert.deepEqual(complete("exp")?.map((item) => item.value), ["export"]);
+  assert.deepEqual(complete("dash")?.map((item) => item.value), ["dashboard"]);
+  assert.deepEqual(complete("CLEAR")?.map((item) => item.value), ["clear"]);
+  assert.equal(complete("unknown"), null);
+  assert.equal(complete("optimize runtime"), null);
+});
+
+
 test("/autoresearch clear turns off, deletes the log, and records a manual off decision", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-cwd-"));
 
