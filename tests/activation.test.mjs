@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { mock } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 
 import autoresearchExtension, {
@@ -12,8 +12,10 @@ import autoresearchExtension, {
 
 const ACTIVATION_ENTRY = "pi-autoresearch.activation";
 const AUTORESEARCH_TOOLS = ["init_experiment", "log_experiment", "run_experiment"];
+const FINALIZE_KICKOFF = { content: "/skill:autoresearch-finalize", options: { expandPromptTemplates: true } };
+const LONGER_THAN_AUTO_RESUME_DELAY_MS = 10_000;
 
-function createHarness({ cwd, branch = [], initialActiveTools = [] }) {
+function createHarness({ cwd, branch = [], initialActiveTools = [], busy = false }) {
   const commands = new Map();
   const handlers = new Map();
   const tools = new Map();
@@ -23,6 +25,7 @@ function createHarness({ cwd, branch = [], initialActiveTools = [] }) {
   const sentMessages = [];
   let activeTools = [...initialActiveTools];
   let aborted = false;
+  let agentBusy = busy;
 
   autoresearchExtension({
     on(name, handler) {
@@ -56,10 +59,14 @@ function createHarness({ cwd, branch = [], initialActiveTools = [] }) {
     cwd,
     mode: "tui",
     hasUI: true,
-    isIdle: () => true,
+    isIdle: () => !agentBusy,
     hasPendingMessages: () => false,
     abort() {
       aborted = true;
+    },
+    // Stands in for pi letting the current run finish, or wind down after an abort.
+    async waitForIdle() {
+      agentBusy = false;
     },
     sessionManager: {
       getSessionId: () => `test:${cwd}`,
@@ -338,6 +345,145 @@ test("starting autoresearch without prompt.md sends the create skill with expans
     const [kickoff] = harness.sentMessages;
     assert.match(kickoff.content, /^\/skill:autoresearch-create optimize runtime/);
     assert.equal(kickoff.options.expandPromptTemplates, true);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("finalize stops an active loop and loads the finalize skill", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-cwd-"));
+
+  try {
+    await writeSameCwdLog(cwd);
+
+    const harness = createHarness({ cwd });
+    await harness.handlers.get("session_start")({}, harness.ctx);
+    assert.deepEqual(harness.activeTools().sort(), AUTORESEARCH_TOOLS.sort());
+
+    await harness.commands.get("autoresearch").handler("finalize", harness.ctx);
+
+    assert.deepEqual(harness.activeTools(), []);
+    assert.equal(harness.appendedEntries.at(-1).data.active, false);
+    assert.equal(harness.widgets.at(-1)?.widget, undefined);
+    assert.deepEqual(harness.sentMessages, [FINALIZE_KICKOFF]);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("a scheduled auto-resume restarts the loop when nothing stops it", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-cwd-"));
+  mock.timers.enable({ apis: ["setTimeout"] });
+
+  try {
+    await writeSameCwdLog(cwd);
+
+    const harness = createHarness({ cwd });
+    await harness.handlers.get("session_start")({}, harness.ctx);
+    await harness.handlers.get("session_compact")({}, harness.ctx);
+    mock.timers.tick(LONGER_THAN_AUTO_RESUME_DELAY_MS);
+
+    assert.equal(harness.sentMessages.length, 1);
+    assert.match(harness.sentMessages[0].content, /Run the next iteration now/);
+  } finally {
+    mock.timers.reset();
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("finalize cancels a scheduled auto-resume so the loop does not restart", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-cwd-"));
+  mock.timers.enable({ apis: ["setTimeout"] });
+
+  try {
+    await writeSameCwdLog(cwd);
+
+    const harness = createHarness({ cwd });
+    await harness.handlers.get("session_start")({}, harness.ctx);
+    await harness.handlers.get("session_compact")({}, harness.ctx);
+    await harness.commands.get("autoresearch").handler("finalize", harness.ctx);
+    mock.timers.tick(LONGER_THAN_AUTO_RESUME_DELAY_MS);
+
+    assert.deepEqual(harness.sentMessages, [FINALIZE_KICKOFF]);
+  } finally {
+    mock.timers.reset();
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("finalize aborts the in-flight iteration and starts the skill on a fresh turn", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-cwd-"));
+
+  try {
+    await writeSameCwdLog(cwd);
+
+    const harness = createHarness({ cwd, busy: true });
+    await harness.handlers.get("session_start")({}, harness.ctx);
+    await harness.commands.get("autoresearch").handler("finalize", harness.ctx);
+
+    assert.equal(harness.aborted(), true);
+    // No deliverAs: sent once the abort settled, not stranded in the aborted run's queue.
+    assert.deepEqual(harness.sentMessages, [FINALIZE_KICKOFF]);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("finalize after the loop is off loads the skill without aborting or recording another off", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-cwd-"));
+
+  try {
+    await writeSameCwdLog(cwd);
+
+    const harness = createHarness({ cwd, branch: [activationEntry(cwd, false)] });
+    await harness.handlers.get("session_start")({}, harness.ctx);
+    await harness.commands.get("autoresearch").handler("finalize", harness.ctx);
+
+    assert.equal(harness.aborted(), false);
+    assert.equal(harness.appendedEntries.length, 0);
+    assert.deepEqual(harness.activeTools(), []);
+    assert.deepEqual(harness.sentMessages, [FINALIZE_KICKOFF]);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("finalize after the loop is off queues behind unrelated work instead of aborting it", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-cwd-"));
+
+  try {
+    await writeSameCwdLog(cwd);
+
+    const harness = createHarness({ cwd, branch: [activationEntry(cwd, false)], busy: true });
+    await harness.handlers.get("session_start")({}, harness.ctx);
+    await harness.commands.get("autoresearch").handler("finalize", harness.ctx);
+
+    assert.equal(harness.aborted(), false);
+    assert.deepEqual(harness.sentMessages, [
+      { ...FINALIZE_KICKOFF, options: { ...FINALIZE_KICKOFF.options, deliverAs: "followUp" } },
+    ]);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("finalize rejects a config-only log instead of starting a session", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-cwd-"));
+
+  try {
+    await mkdir(join(cwd, ".auto"), { recursive: true });
+    await writeFile(
+      join(cwd, ".auto", "log.jsonl"),
+      JSON.stringify({ type: "config", name: "Not run yet" }) + "\n",
+    );
+
+    const harness = createHarness({ cwd });
+    await harness.commands.get("autoresearch").handler("finalize", harness.ctx);
+
+    assert.equal(harness.sentMessages.length, 0);
+    assert.equal(harness.appendedEntries.length, 0);
+    assert.deepEqual(harness.activeTools(), []);
+    assert.match(harness.notifications.at(-1).message, /No logged experiments to finalize/);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }

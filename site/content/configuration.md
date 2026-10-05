@@ -123,6 +123,7 @@ chmod +x .auto/hooks/before.sh .auto/hooks/after.sh
 
 - **`/autoresearch <text>`** — Start a new session or resume an existing one with additional context.
 - **`/autoresearch off`** — Stop auto-resume while preserving the session history.
+- **`/autoresearch finalize`** — Stop the loop, then turn kept experiments into reviewable branches with the finalize skill.
 - **`/autoresearch clear`** — Delete the log and reset runtime state for a clean start.
 - **`/autoresearch export`** — Open the live browser dashboard and export a shareable result image.
 - **`/autoresearch dashboard`** — Open the fullscreen, scrollable dashboard in the terminal.

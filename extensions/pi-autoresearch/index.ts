@@ -16,6 +16,7 @@
 import type {
   CustomEntry,
   ExtensionAPI,
+  ExtensionCommandContext,
   ExtensionContext,
   SessionBeforeCompactEvent,
   Theme,
@@ -1232,6 +1233,16 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   const hasAutoresearchRules = (ctx: ExtensionContext): boolean =>
     fs.existsSync(autoresearchMdPath(resolveWorkDir(ctx.cwd)));
 
+  const hasLoggedExperiment = (ctxCwd: string): boolean => {
+    try {
+      const jsonlPath = autoresearchJsonlPath(resolveWorkDir(ctxCwd));
+      if (!fs.existsSync(jsonlPath)) return false;
+      return reconstructJsonlState(fs.readFileSync(jsonlPath, "utf-8")).results.length > 0;
+    } catch {
+      return false;
+    }
+  };
+
   const readJsonlLines = (workDir: string): string[] => {
     const jsonlPath = autoresearchJsonlPath(workDir);
     if (!fs.existsSync(jsonlPath)) return [];
@@ -1286,10 +1297,11 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
   const autoresearchHelp = () =>
     [
-      "Usage: /autoresearch [off|clear|export|dashboard|<text>]",
+      "Usage: /autoresearch [off|finalize|clear|export|dashboard|<text>]",
       "",
       "<text> enters autoresearch mode and starts or resumes the loop.",
       "off leaves autoresearch mode.",
+      "finalize stops the loop and turns kept experiments into reviewable branches.",
       "clear deletes the session log (.auto/log.jsonl) and turns autoresearch mode off.",
       "export opens a local live dashboard for the session log in your browser.",
       "dashboard opens the fullscreen dashboard overlay in the terminal.",
@@ -2993,12 +3005,9 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   // /autoresearch command — enter autoresearch mode
   // -----------------------------------------------------------------------
 
-  function turnAutoresearchOff(ctx: ExtensionContext): void {
+  function stopAutoresearchLoop(ctx: ExtensionContext): void {
     const runtime = getRuntime(ctx);
-    const wasRunning = !ctx.isIdle();
-    const workDir = resolveWorkDir(ctx.cwd);
-
-    recordAutoresearchActivation(workDir, false);
+    recordAutoresearchActivation(resolveWorkDir(ctx.cwd), false);
     setAutoresearchMode(ctx, false);
     runtime.autoResumeTurns = 0;
     runtime.experimentsThisSession = 0;
@@ -3008,15 +3017,39 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     cancelPendingResume(runtime);
     stopDashboardServer();
     clearSessionUi(ctx);
-    if (wasRunning) ctx.abort();
+    if (!ctx.isIdle()) ctx.abort();
+  }
+
+  function turnAutoresearchOff(ctx: ExtensionContext): void {
+    const wasRunning = !ctx.isIdle();
+    stopAutoresearchLoop(ctx);
     ctx.ui.notify(
       wasRunning ? "Autoresearch mode OFF — aborting current run" : "Autoresearch mode OFF",
       "info"
     );
   }
 
+  const FINALIZE_KICKOFF = "/skill:autoresearch-finalize";
+
+  async function finalizeAutoresearch(ctx: ExtensionCommandContext): Promise<void> {
+    if (!hasLoggedExperiment(ctx.cwd)) {
+      ctx.ui.notify("No logged experiments to finalize — use '/autoresearch <goal>' to start a session", "error");
+      return;
+    }
+    if (getRuntime(ctx).autoresearchMode) await turnOffAndSettle(ctx);
+    ctx.ui.notify("Loading autoresearch-finalize skill", "info");
+    sendWhenReady(ctx, FINALIZE_KICKOFF);
+  }
+
+  // An aborted run never drains its queue, so a skill queued as a follow-up
+  // would be stranded there. Waiting out the abort lets it start a fresh turn.
+  async function turnOffAndSettle(ctx: ExtensionCommandContext): Promise<void> {
+    turnAutoresearchOff(ctx);
+    await ctx.waitForIdle();
+  }
+
   pi.registerCommand("autoresearch", {
-    description: "Start, stop, clear, export, or open dashboards for autoresearch mode",
+    description: "Start, stop, finalize, clear, export, or open dashboards for autoresearch mode",
     handler: async (args, ctx) => {
       const runtime = getRuntime(ctx);
       const trimmedArgs = (args ?? "").trim();
@@ -3029,6 +3062,11 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
       if (command === "off") {
         turnAutoresearchOff(ctx);
+        return;
+      }
+
+      if (command === "finalize") {
+        await finalizeAutoresearch(ctx);
         return;
       }
 
