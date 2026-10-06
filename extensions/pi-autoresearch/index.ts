@@ -53,6 +53,7 @@ import {
   buildAutoresearchCompactionSummary,
 } from "./compaction.ts";
 import { resolveAutoresearchShortcuts, SHORTCUT_ACTIONS } from "./shortcuts.ts";
+import { getAutoresearchArgumentCompletions, isHelpRequest, renderAutoresearchHelp } from "./commands.ts";
 import { sessionFilePath, sessionFileCandidates, ensureParentDir, AUTO_DIR } from "./paths.ts";
 
 // ---------------------------------------------------------------------------
@@ -1075,14 +1076,11 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   const SETTLED_WINDOW_MS = 800;
   const shortcuts = resolveAutoresearchShortcuts();
 
+  // The widget shows the first hint that fits its width, so a configured
+  // shortcut must come before the longer subcommand or it is never shown.
   const dashboardHintVariants = (): string[] => {
-    if (shortcuts.fullscreenDashboard) {
-      return [
-        `${shortcuts.fullscreenDashboard} fullscreen`,
-        shortcuts.fullscreenDashboard,
-      ];
-    }
-    return ["/autoresearch dashboard fullscreen", "/autoresearch dashboard"];
+    const shortcut = shortcuts.fullscreenDashboard;
+    return shortcut ? [`${shortcut} fullscreen`, shortcut] : ["/autoresearch dashboard"];
   };
 
   const runtimeStore = createRuntimeStore();
@@ -1294,25 +1292,6 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       ctx.ui.setWidget("autoresearch", undefined);
     }
   };
-
-  const autoresearchHelp = () =>
-    [
-      "Usage: /autoresearch [off|finalize|clear|export|dashboard|<text>]",
-      "",
-      "<text> enters autoresearch mode and starts or resumes the loop.",
-      "off leaves autoresearch mode.",
-      "finalize stops the loop and turns kept experiments into reviewable branches.",
-      "clear deletes the session log (.auto/log.jsonl) and turns autoresearch mode off.",
-      "export opens a local live dashboard for the session log in your browser.",
-      "dashboard opens the fullscreen dashboard overlay in the terminal.",
-
-      "",
-      "Examples:",
-      "  /autoresearch optimize unit test runtime, monitor correctness",
-      "  /autoresearch model training, run 5 minutes of train.py and note the loss ratio as optimization target",
-      "  /autoresearch export",
-      "  /autoresearch dashboard",
-    ].join("\n");
 
   // -----------------------------------------------------------------------
   // State reconstruction
@@ -3050,13 +3029,14 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
   pi.registerCommand("autoresearch", {
     description: "Start, stop, finalize, clear, export, or open dashboards for autoresearch mode",
+    getArgumentCompletions: getAutoresearchArgumentCompletions,
     handler: async (args, ctx) => {
       const runtime = getRuntime(ctx);
       const trimmedArgs = (args ?? "").trim();
       const command = trimmedArgs.toLowerCase();
 
-      if (!trimmedArgs) {
-        ctx.ui.notify(autoresearchHelp(), "info");
+      if (isHelpRequest(command)) {
+        ctx.ui.notify(renderAutoresearchHelp(), "info");
         return;
       }
 
