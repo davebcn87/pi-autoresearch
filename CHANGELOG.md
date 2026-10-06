@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- `/autoresearch finalize` stops the loop and loads the `autoresearch-finalize` skill. It turns autoresearch mode off like `/autoresearch off` (cancelling a pending auto-resume and aborting a run in progress), waits for the agent to go idle, and then starts the skill on a fresh turn. Previously `finalize` was treated as a goal: mid-loop it was rejected with "Autoresearch already active" while the loop kept running, and with the loop off it started a new research session with the goal "finalize". Without a logged experiment run it reports an error instead of starting a session.
+
 ## [1.8.1] - 2026-09-08
 
 ### Fixed

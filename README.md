@@ -56,6 +56,7 @@ Then start the loop inside pi:
 | `/autoresearch` | Show help without activating autoresearch mode. |
 | `/autoresearch <text>` | Enter autoresearch mode. If `.auto/prompt.md` exists, resumes the loop with `<text>` as context. Otherwise, sets up a new session. |
 | `/autoresearch off` | Leave autoresearch mode. Stops auto-resume and clears runtime state but keeps `.auto/log.jsonl` intact. |
+| `/autoresearch finalize` | Stop the loop like `off` (aborting a run in progress), then load the `autoresearch-finalize` skill to turn kept experiments into reviewable branches. |
 | `/autoresearch clear` | Delete `.auto/log.jsonl`, reset all state, and turn autoresearch mode off. Use this for a clean start. |
 | `/autoresearch export` | Open a live dashboard in your browser. Auto-updates as experiments run. |
 | `/autoresearch dashboard` | Open the fullscreen scrollable dashboard overlay in the terminal. Navigate with `↑`/`↓`/`j`/`k`, `PageUp`/`PageDown`/`u`/`d`, `g`/`G` for top/bottom, `Escape` or `q` to close. |
@@ -68,6 +69,7 @@ Then start the loop inside pi:
 /autoresearch export
 /autoresearch dashboard
 /autoresearch off
+/autoresearch finalize
 /autoresearch clear
 ```
 
@@ -193,8 +195,10 @@ Every result is appended to `.auto/log.jsonl` in your project — one line per r
 ### 3. Finalize into reviewable branches
 
 ```
-/skill:autoresearch-finalize
+/autoresearch finalize
 ```
+
+This stops the loop (aborting a run in progress) and loads the `autoresearch-finalize` skill. Loading the skill directly with `/skill:autoresearch-finalize` leaves autoresearch mode on, so a running loop keeps going.
 
 The agent reads `.auto/log.jsonl`, groups kept experiments into logical changesets, proposes the grouping for your approval, then creates independent branches from the merge-base. Each commit includes metric improvements in the message. Groups must not share files, so branches can be reviewed and merged independently.
 
