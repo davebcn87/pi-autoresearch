@@ -23,7 +23,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { truncateTail, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { Text, truncateToWidth, matchesKey, visibleWidth, type AutocompleteItem } from "@earendil-works/pi-tui";
+import { Text, truncateToWidth, matchesKey, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -53,6 +53,7 @@ import {
   buildAutoresearchCompactionSummary,
 } from "./compaction.ts";
 import { resolveAutoresearchShortcuts, SHORTCUT_ACTIONS } from "./shortcuts.ts";
+import { getAutoresearchArgumentCompletions, isHelpRequest, renderAutoresearchHelp } from "./commands.ts";
 import { sessionFilePath, sessionFileCandidates, ensureParentDir, AUTO_DIR } from "./paths.ts";
 
 // ---------------------------------------------------------------------------
@@ -1291,40 +1292,6 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       ctx.ui.setWidget("autoresearch", undefined);
     }
   };
-
-  const autoresearchArgumentCompletions: AutocompleteItem[] = [
-    { value: "off", label: "off", description: "Leave autoresearch mode" },
-    { value: "clear", label: "clear", description: "Delete the session log and reset state" },
-    { value: "export", label: "export", description: "Open the live browser dashboard" },
-    { value: "dashboard", label: "dashboard", description: "Open the terminal dashboard overlay" },
-  ];
-
-  function getAutoresearchArgumentCompletions(argumentPrefix: string): AutocompleteItem[] | null {
-    const prefix = argumentPrefix.trim().toLowerCase();
-    const matches = autoresearchArgumentCompletions.filter((item) =>
-      item.value.startsWith(prefix),
-    );
-    return matches.length > 0 ? matches : null;
-  }
-
-  const autoresearchHelp = () =>
-    [
-      "Usage: /autoresearch [off|finalize|clear|export|dashboard|<text>]",
-      "",
-      "<text> enters autoresearch mode and starts or resumes the loop.",
-      "off leaves autoresearch mode.",
-      "finalize stops the loop and turns kept experiments into reviewable branches.",
-      "clear deletes the session log (.auto/log.jsonl) and turns autoresearch mode off.",
-      "export opens a local live dashboard for the session log in your browser.",
-      "dashboard opens the fullscreen dashboard overlay in the terminal.",
-
-      "",
-      "Examples:",
-      "  /autoresearch optimize unit test runtime, monitor correctness",
-      "  /autoresearch model training, run 5 minutes of train.py and note the loss ratio as optimization target",
-      "  /autoresearch export",
-      "  /autoresearch dashboard",
-    ].join("\n");
 
   // -----------------------------------------------------------------------
   // State reconstruction
@@ -3068,8 +3035,8 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       const trimmedArgs = (args ?? "").trim();
       const command = trimmedArgs.toLowerCase();
 
-      if (!trimmedArgs) {
-        ctx.ui.notify(autoresearchHelp(), "info");
+      if (isHelpRequest(command)) {
+        ctx.ui.notify(renderAutoresearchHelp(), "info");
         return;
       }
 

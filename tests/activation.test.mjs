@@ -550,7 +550,8 @@ test("/autoresearch offers completions for every subcommand", () => {
   const complete = harness.commands.get("autoresearch").getArgumentCompletions;
 
   assert.ok(complete);
-  assert.deepEqual(complete("")?.map((item) => item.value), ["off", "clear", "export", "dashboard"]);
+  assert.deepEqual(complete("")?.map((item) => item.value), ["off", "finalize", "clear", "export", "dashboard", "help"]);
+  assert.deepEqual(complete("fin")?.map((item) => item.value), ["finalize"]);
   assert.deepEqual(complete("exp")?.map((item) => item.value), ["export"]);
   assert.deepEqual(complete("dash")?.map((item) => item.value), ["dashboard"]);
   assert.deepEqual(complete("CLEAR")?.map((item) => item.value), ["clear"]);
@@ -558,6 +559,40 @@ test("/autoresearch offers completions for every subcommand", () => {
   assert.equal(complete("optimize runtime"), null);
 });
 
+test("no offered subcommand is mistaken for a research goal", async () => {
+  const complete = createHarness({ cwd: "/tmp/pi-autoresearch-completions" })
+    .commands.get("autoresearch").getArgumentCompletions;
+
+  for (const { value: subcommand } of complete("")) {
+    const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-cwd-"));
+    try {
+      const harness = createHarness({ cwd });
+      harness.ctx.mode = "rpc";
+
+      await harness.commands.get("autoresearch").handler(subcommand, harness.ctx);
+
+      assert.equal(harness.sentMessages.length, 0, `${subcommand} started a research session`);
+      assert.ok(
+        !harness.appendedEntries.some((entry) => entry.data?.active === true),
+        `${subcommand} activated autoresearch mode`,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  }
+});
+
+test("/autoresearch help and its aliases show usage instead of starting a session", async () => {
+  for (const alias of ["", "help", "HELP", "--help", "-h"]) {
+    const harness = createHarness({ cwd: "/tmp/pi-autoresearch-help" });
+
+    await harness.commands.get("autoresearch").handler(alias, harness.ctx);
+
+    assert.equal(harness.sentMessages.length, 0, `"${alias}" started a research session`);
+    assert.equal(harness.appendedEntries.length, 0);
+    assert.match(harness.notifications.at(-1).message, /^Usage: \/autoresearch \[off\|finalize\|/);
+  }
+});
 
 test("/autoresearch clear turns off, deletes the log, and records a manual off decision", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-cwd-"));

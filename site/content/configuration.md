@@ -127,6 +127,9 @@ chmod +x .auto/hooks/before.sh .auto/hooks/after.sh
 - **`/autoresearch clear`** — Delete the log and reset runtime state for a clean start.
 - **`/autoresearch export`** — Open the live browser dashboard and export a shareable result image.
 - **`/autoresearch dashboard`** — Open the fullscreen, scrollable dashboard in the terminal.
+- **`/autoresearch help`** — List the subcommands and examples without activating autoresearch mode.
+
+Subcommands autocomplete as you type `/autoresearch `.
 
 ## Intentionally fixed behavior
 

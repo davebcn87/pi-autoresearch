@@ -53,13 +53,15 @@ Then start the loop inside pi:
 
 | Subcommand | Description |
 |------------|-------------|
-| `/autoresearch` | Show help without activating autoresearch mode. |
+| `/autoresearch` or `/autoresearch help` | Show help without activating autoresearch mode. `--help` and `-h` work too. |
 | `/autoresearch <text>` | Enter autoresearch mode. If `.auto/prompt.md` exists, resumes the loop with `<text>` as context. Otherwise, sets up a new session. |
 | `/autoresearch off` | Leave autoresearch mode. Stops auto-resume and clears runtime state but keeps `.auto/log.jsonl` intact. |
 | `/autoresearch finalize` | Stop the loop like `off` (aborting a run in progress), then load the `autoresearch-finalize` skill to turn kept experiments into reviewable branches. |
 | `/autoresearch clear` | Delete `.auto/log.jsonl`, reset all state, and turn autoresearch mode off. Use this for a clean start. |
 | `/autoresearch export` | Open a live dashboard in your browser. Auto-updates as experiments run. |
 | `/autoresearch dashboard` | Open the fullscreen scrollable dashboard overlay in the terminal. Navigate with `↑`/`↓`/`j`/`k`, `PageUp`/`PageDown`/`u`/`d`, `g`/`G` for top/bottom, `Escape` or `q` to close. |
+
+Subcommands autocomplete: type `/autoresearch ` and pick one from the list, or start typing (`/autoresearch fi` → `finalize`).
 
 **Examples:**
 
