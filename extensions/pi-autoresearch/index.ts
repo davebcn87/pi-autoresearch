@@ -1076,11 +1076,11 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   const SETTLED_WINDOW_MS = 800;
   const shortcuts = resolveAutoresearchShortcuts();
 
+  // The widget shows the first hint that fits its width, so a configured
+  // shortcut must come before the longer subcommand or it is never shown.
   const dashboardHintVariants = (): string[] => {
-    const dashboardCommand = "/autoresearch dashboard";
-    return shortcuts.fullscreenDashboard
-      ? [dashboardCommand, shortcuts.fullscreenDashboard]
-      : [dashboardCommand];
+    const shortcut = shortcuts.fullscreenDashboard;
+    return shortcut ? [`${shortcut} fullscreen`, shortcut] : ["/autoresearch dashboard"];
   };
 
   const runtimeStore = createRuntimeStore();

@@ -12,6 +12,7 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 
 - `/autoresearch help` (also `--help` and `-h`) shows the usage text. Previously only a bare `/autoresearch` did, and `/autoresearch help` started a research session with the goal "help".
+- Without a keyboard shortcut configured, the dashboard widget's hint reads `/autoresearch dashboard`. It used to read `/autoresearch dashboard fullscreen`, which looks like a command but started a research session with that goal when typed.
 
 ## [1.8.1] - 2026-09-08
 

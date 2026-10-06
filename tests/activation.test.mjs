@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { mock } from "node:test";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 
 import autoresearchExtension, {
@@ -580,6 +581,55 @@ test("no offered subcommand is mistaken for a research goal", async () => {
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
+  }
+});
+
+const PLAIN_THEME = new Proxy({}, { get: () => (...args) => args.at(-1) });
+
+async function renderDashboardWidgetWithShortcuts(cwd, shortcuts) {
+  const agentDir = await mkdtemp(join(tmpdir(), "pi-autoresearch-agent-"));
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  try {
+    await mkdir(join(agentDir, "extensions"), { recursive: true });
+    await writeFile(join(agentDir, "extensions", "pi-autoresearch.json"), JSON.stringify({ shortcuts }));
+    // Guards against reading the developer's own shortcut config.
+    assert.equal(getAgentDir(), agentDir);
+
+    const harness = createHarness({ cwd });
+    await harness.handlers.get("session_start")({}, harness.ctx);
+    return harness.widgets.at(-1).widget({}, PLAIN_THEME).render(120).join("\n");
+  } finally {
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    await rm(agentDir, { recursive: true, force: true });
+  }
+}
+
+test("the dashboard hint names the dashboard subcommand when no shortcut is configured", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-cwd-"));
+
+  try {
+    await writeSameCwdLog(cwd);
+    const rendered = await renderDashboardWidgetWithShortcuts(cwd, {});
+
+    assert.match(rendered, / \/autoresearch dashboard$/m);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("the dashboard hint shows a configured fullscreen shortcut instead of the subcommand", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-cwd-"));
+
+  try {
+    await writeSameCwdLog(cwd);
+    const rendered = await renderDashboardWidgetWithShortcuts(cwd, { fullscreenDashboard: "ctrl+shift+u" });
+
+    assert.match(rendered, / ctrl\+shift\+u fullscreen$/m);
+    assert.doesNotMatch(rendered, /\/autoresearch dashboard/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
   }
 });
 
