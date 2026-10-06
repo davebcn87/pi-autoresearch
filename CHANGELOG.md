@@ -7,7 +7,7 @@ All notable changes to this project will be documented in this file.
 ### Added
 
 - `/autoresearch finalize` stops the loop and loads the `autoresearch-finalize` skill. It turns autoresearch mode off like `/autoresearch off` (cancelling a pending auto-resume and aborting a run in progress), waits for the agent to go idle, and then starts the skill on a fresh turn. Previously `finalize` was treated as a goal: mid-loop it was rejected with "Autoresearch already active" while the loop kept running, and with the loop off it started a new research session with the goal "finalize". Without a logged experiment run it reports an error instead of starting a session.
-- `/autoresearch` subcommands (`off`, `finalize`, `clear`, `export`, `dashboard`, `help`) now autocomplete as you type, each with a one-line description.
+- `/autoresearch` subcommands (`off`, `finalize`, `clear`, `export`, `dashboard`, `help`) now autocomplete as you type, each with a one-line description. A subcommand typed in full still runs on the first Enter.
 
 ### Fixed
 

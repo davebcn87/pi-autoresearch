@@ -554,7 +554,8 @@ test("/autoresearch offers completions for every subcommand", () => {
   assert.deepEqual(complete("fin")?.map((item) => item.value), ["finalize"]);
   assert.deepEqual(complete("exp")?.map((item) => item.value), ["export"]);
   assert.deepEqual(complete("dash")?.map((item) => item.value), ["dashboard"]);
-  assert.deepEqual(complete("CLEAR")?.map((item) => item.value), ["clear"]);
+  assert.deepEqual(complete("CLE")?.map((item) => item.value), ["clear"]);
+  assert.equal(complete("clear"), null);
   assert.equal(complete("unknown"), null);
   assert.equal(complete("optimize runtime"), null);
 });

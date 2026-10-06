@@ -27,6 +27,13 @@ test("completions filter by prefix, ignoring case and surrounding whitespace", (
   assert.deepEqual(completedValues(" cl"), ["clear"]);
 });
 
+test("a subcommand typed in full gets no popup, so the first Enter runs it", () => {
+  for (const name of subcommandNames) {
+    assert.equal(getAutoresearchArgumentCompletions(name), null, `${name} still shows a popup`);
+    assert.equal(getAutoresearchArgumentCompletions(`${name.toUpperCase()} `), null, `${name} in caps still shows a popup`);
+  }
+});
+
 test("completions return null when nothing matches so pi shows no popup for a free-text goal", () => {
   assert.equal(getAutoresearchArgumentCompletions("optimize test runtime"), null);
   assert.equal(getAutoresearchArgumentCompletions("--"), null);

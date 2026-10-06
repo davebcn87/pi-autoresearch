@@ -40,6 +40,9 @@ export function isHelpRequest(command: string): boolean {
 
 export function getAutoresearchArgumentCompletions(argumentPrefix: string): AutocompleteItem[] | null {
   const typed = argumentPrefix.trim().toLowerCase();
+  // pi applies an open completion on Enter instead of submitting, so offering
+  // a subcommand that is already typed in full would make it take two Enters.
+  if (isSubcommandName(typed)) return null;
   const matches = SUBCOMMANDS.filter((subcommand) => subcommand.name.startsWith(typed));
   return matches.length > 0 ? matches.map(toAutocompleteItem) : null;
 }
@@ -53,6 +56,10 @@ export function renderAutoresearchHelp(): string {
     "Examples:",
     ...EXAMPLES.map((example) => `  ${example}`),
   ].join("\n");
+}
+
+function isSubcommandName(typed: string): boolean {
+  return SUBCOMMANDS.some((subcommand) => subcommand.name === typed);
 }
 
 function toAutocompleteItem(subcommand: Subcommand): AutocompleteItem {
