@@ -21,13 +21,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
-
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: 22.22.2
-          registry-url: https://registry.npmjs.org
-
       - name: Read package metadata
         id: pkg
         run: |
@@ -67,6 +60,19 @@ jobs:
             echo "Release v${{ steps.pkg.outputs.version }} is missing — will create it."
             echo "create=true" >> "$GITHUB_OUTPUT"
           fi
+
+      # Only a publish installs dependencies, so only a publish sets up pnpm and
+      # its cache. On a skipped run, setup-node's cleanup would try to save a
+      # pnpm store that was never created and fail the job.
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        if: steps.check.outputs.publish == 'true'
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        if: steps.check.outputs.publish == 'true'
+        with:
+          node-version: 22.22.2
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
 
       - name: Install dependencies
         if: steps.check.outputs.publish == 'true'
