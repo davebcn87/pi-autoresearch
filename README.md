@@ -169,6 +169,21 @@ Then `/reload` in pi.
 
 </details>
 
+### Other agents (Devin, Claude Code, Codex, …)
+
+The skills are agent-agnostic — the pi extension is only needed for the TUI dashboard, widget, and `/autoresearch` commands. Copy the skills into a shared skills directory:
+
+```bash
+cp -r skills/autoresearch-* .agents/skills/    # repo-level, committed
+# or ~/.agents/skills/ for user-level
+```
+
+Requirements: `node` ≥ 18, `git`, `bash` on PATH.
+
+Without pi, the loop runs through `skills/autoresearch-create/autoresearch.mjs` — a portable reimplementation of `init_experiment` / `run_experiment` / `log_experiment` with the same `.auto/` files, the same `log.jsonl` schema, and the same keep/revert/checks/hook semantics, so `autoresearch-finalize` works identically. Progress is read via `autoresearch.mjs status` or `.auto/log.jsonl` instead of the widget.
+
+Then just ask your agent: *"run autoresearch to optimize X"* — and *"finalize autoresearch"* when done. If your agent uses a different skills directory (e.g. `.claude/skills/`), copy there instead; the skills themselves don't care.
+
 ---
 
 ## Usage

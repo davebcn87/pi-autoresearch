@@ -102,6 +102,11 @@ One JSON line. Parse with `jq`. Realistic example:
 
 `.auto/**` survives the auto-revert — the entire `.auto/` folder is preserved. (Legacy `autoresearch.*` paths are still preserved too, for in-flight sessions.)
 
+### Who fires the hooks
+
+- **pi extension**: `init_experiment` and `log_experiment` fire hooks automatically.
+- **Portable runtime** (`autoresearch.mjs`, for Devin / Claude Code / Codex / …): `log` fires `after` for the run just logged, then `before` for the next iteration — same stdin contract, same 30 s timeout, same 8 KB stdout cap. `init` fires `before` on a fresh session. Hook stdout is printed back to the agent as the steer message.
+
 ---
 
 ## Examples

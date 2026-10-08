@@ -8,6 +8,8 @@ description: Finalize an autoresearch session into clean, reviewable branches. U
 
 Turn a noisy autoresearch branch into clean, independent branches — one per logical change, each starting from the merge-base.
 
+Works with any agent — `finalize.sh` needs only `bash`, `git`, and `node` on PATH. `<SKILL_DIR>` below is this skill's directory (e.g. `.agents/skills/autoresearch-finalize`).
+
 ## Step 1 — Analyze and Propose Groups
 
 1. Read `.auto/log.jsonl` (legacy: `autoresearch.jsonl`). Filter to **kept** experiments only.

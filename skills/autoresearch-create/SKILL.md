@@ -9,9 +9,22 @@ Autonomous experiment loop: try ideas, keep what works, discard what doesn't, ne
 
 ## Tools
 
+Two equivalent toolchains — use whichever your agent provides:
+
+**A. pi extension tools** — available only inside pi with this extension installed:
+
 - **`init_experiment`** — configure session (name, metric, unit, direction). Call again to re-initialize with a new baseline when the optimization target changes.
 - **`run_experiment`** — runs command, times it, captures output.
 - **`log_experiment`** — records result. `keep` auto-commits. `discard`/`crash`/`checks_failed` auto-reverts code changes (autoresearch files preserved). Always include secondary `metrics` dict. Dashboard: ctrl+shift+t.
+
+**B. Portable runtime** — for any other agent (Devin, Claude Code, Codex, …) with `node` (≥18), `git` and `bash`. `autoresearch.mjs` sits next to this SKILL.md and implements the same contract — same `.auto/` files, same `log.jsonl` schema, same keep/revert/checks/hook semantics:
+
+- `node <skill-dir>/autoresearch.mjs init --name "<goal>" --metric <name> [--unit <u>] [--direction lower|higher]` — `init_experiment`
+- `node <skill-dir>/autoresearch.mjs run [command] [--timeout <s>] [--checks-timeout <s>]` — `run_experiment`. Defaults to `bash .auto/measure.sh`; parses `METRIC` lines; runs `.auto/checks.sh` after a passing benchmark.
+- `node <skill-dir>/autoresearch.mjs log --status keep|discard|crash|checks_failed --metric <n> --commit <sha> --description "<text>" [--metrics '<json>'] [--asi '<json>'] [--force]` — `log_experiment`. Auto-commits on `keep`, auto-reverts (preserving `.auto/`) otherwise, fires `.auto/hooks/{before,after}.sh`, prints baseline/delta/confidence.
+- `node <skill-dir>/autoresearch.mjs status` — session snapshot (baseline, best kept, confidence, recent runs). Portable-mode replacement for the pi widget/dashboard; use it when resuming.
+
+Below, `init_experiment` / `run_experiment` / `log_experiment` mean whichever toolchain is active. In portable mode there is no `/autoresearch` command, widget, or dashboard — `.auto/log.jsonl` + `status` are the source of truth.
 
 ## Session files
 
