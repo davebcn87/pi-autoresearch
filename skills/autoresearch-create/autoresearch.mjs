@@ -17,7 +17,7 @@
  * Produces the same .auto/log.jsonl schema as the pi extension, so
  * autoresearch-finalize works identically on both runtimes.
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -304,6 +304,46 @@ function isMeasureCommand(command) {
   return /^(?:(?:bash|sh|source)\s+(?:-\w+\s+)*)?(?:\/|\.{1,2}\/|[\w.-]+\/)*(?:autoresearch\.sh|\.auto\/measure\.sh)(?:\s|$)/.test(cmd);
 }
 
+/**
+ * Run a command like the extension's run_experiment: detached process group so
+ * a timeout kills the whole tree (benchmarks that spawn servers/trainers must
+ * not leak orphans). Output is combined stdout+stderr, tail-capped.
+ */
+function spawnCapture(command, cwd, timeoutMs) {
+  return new Promise((resolve) => {
+    let output = "";
+    let killed = false;
+    let done = false;
+    const child = spawn("bash", ["-c", command], {
+      cwd,
+      detached: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const finish = (code) => {
+      if (done) return;
+      done = true;
+      if (timer) clearTimeout(timer);
+      resolve({ code, killed, output });
+    };
+    const timer =
+      timeoutMs > 0
+        ? setTimeout(() => {
+            killed = true;
+            try { process.kill(-child.pid, "SIGKILL"); }
+            catch { try { child.kill("SIGKILL"); } catch { /* already dead */ } }
+          }, timeoutMs)
+        : null;
+    const onData = (d) => {
+      output += d.toString("utf8");
+      if (output.length > 8 * 1024 * 1024) output = output.slice(-4 * 1024 * 1024);
+    };
+    child.stdout.on("data", onData);
+    child.stderr.on("data", onData);
+    child.on("error", () => finish(null));
+    child.on("close", (code) => finish(code));
+  });
+}
+
 // ---------------------------------------------------------------------------
 // init
 // ---------------------------------------------------------------------------
@@ -338,7 +378,7 @@ function cmdInit(args) {
 // ---------------------------------------------------------------------------
 // run
 // ---------------------------------------------------------------------------
-function cmdRun(args) {
+async function cmdRun(args) {
   const cwd = process.cwd();
   const workDir = resolveWorkDir(cwd);
   const st = reconstruct(readEntries(workDir));
@@ -359,16 +399,10 @@ function cmdRun(args) {
 
   const timeoutS = Number.parseFloat(args.timeout ?? "600");
   const t0 = Date.now();
-  const res = spawnSync("bash", ["-c", command], {
-    cwd: workDir,
-    encoding: "utf8",
-    timeout: timeoutS * 1000,
-    maxBuffer: 64 * 1024 * 1024,
-    shell: false,
-  });
-  const timedOut = !!(res.error && res.error.code === "ETIMEDOUT");
-  const exitCode = res.status;
-  const output = (res.stdout || "") + (res.stderr || "");
+  const res = await spawnCapture(command, workDir, timeoutS * 1000);
+  const timedOut = res.killed;
+  const exitCode = res.code;
+  const output = res.output;
   const duration = (Date.now() - t0) / 1000;
   const benchmarkPassed = exitCode === 0 && !timedOut;
 
@@ -609,7 +643,7 @@ const [cmd, ...rest] = process.argv.slice(2);
 const args = parseArgs(rest);
 switch (cmd) {
   case "init": cmdInit(args); break;
-  case "run": cmdRun(args); break;
+  case "run": await cmdRun(args); break;
   case "log": cmdLog(args); break;
   case "status": cmdStatus(); break;
   default:
