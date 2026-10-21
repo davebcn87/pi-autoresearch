@@ -182,3 +182,36 @@ test("delta is computed against the first run of the same segment", () => {
     assert.match(summary, /#1 keep\s+200 \| desc: seg0 base/);
   });
 });
+
+test("baseline is the first measured run when a segment starts with crashes", () => {
+  withTempWorkDir((workDir) => {
+    writeJsonlLines(workDir, [
+      '{"type":"config","name":"S","metricName":"us","metricUnit":"us","bestDirection":"lower"}',
+      '{"run":1,"commit":"a","metric":0,"status":"crash","description":"rig unreachable","timestamp":1,"metrics":{}}',
+      '{"run":2,"commit":"a","metric":0,"status":"crash","description":"rig still unreachable","timestamp":2,"metrics":{}}',
+      '{"run":3,"commit":"a","metric":40,"status":"keep","description":"first measurement","timestamp":3,"metrics":{}}',
+      '{"run":4,"commit":"b","metric":30,"status":"keep","description":"faster","timestamp":4,"metrics":{}}',
+    ]);
+
+    const summary = buildAutoresearchCompactionSummary(autoresearchSummaryPathsFor(workDir));
+
+    assert.match(summary, /Baseline \(#3\): 40us/);
+    assert.match(summary, /Best\s+\(#4\): 30us \(-25\.0%\)/);
+    assert.match(summary, /#4 keep\s+30 \(-25\.0%\) \| desc: faster/);
+    assert.match(summary, /#1 crash\s+0 \| desc: rig unreachable/);
+  });
+});
+
+test("session block omits baseline/best while every run in the segment has crashed", () => {
+  withTempWorkDir((workDir) => {
+    writeJsonlLines(workDir, [
+      '{"type":"config","name":"S","metricName":"us","metricUnit":"us","bestDirection":"lower"}',
+      '{"run":1,"commit":"a","metric":0,"status":"crash","description":"rig unreachable","timestamp":1,"metrics":{}}',
+    ]);
+
+    const summary = buildAutoresearchCompactionSummary(autoresearchSummaryPathsFor(workDir));
+
+    assert.match(summary, /Runs so far: 1 \(0 keep · 1 crash\)/);
+    assert.doesNotMatch(summary, /Baseline/);
+  });
+});

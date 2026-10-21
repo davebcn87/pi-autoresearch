@@ -11,6 +11,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import {
+  hasMeasurement,
   reconstructJsonlState,
   type ReconstructedJsonlState,
   type ReconstructedRun,
@@ -112,7 +113,7 @@ function baselineAndBestLines(
   direction: "lower" | "higher",
   unit: string,
 ): string[] {
-  const baseline = runs[0];
+  const baseline = runs.find(hasMeasurement);
   if (!baseline) return [];
   const lines = [`Baseline (#${baseline.run}): ${formatMetricWithUnit(baseline.metric, unit)}`];
   const best = bestRun(runs, direction);
@@ -188,7 +189,7 @@ function nextStepSection(): string {
 
 /** Baseline metric for a run = first run in the same segment across full reconstructed state. */
 function baselineFor(run: ReconstructedRun, all: ReconstructedRun[]): number | null {
-  const sameSegment = all.find((other) => other.segment === run.segment);
+  const sameSegment = all.find((other) => other.segment === run.segment && hasMeasurement(other));
   return sameSegment?.metric ?? null;
 }
 
@@ -211,7 +212,7 @@ function formatMetric(value: number): string {
 }
 
 function formatDelta(value: number, baseline: number | null): string {
-  if (baseline === null || baseline === 0 || value === baseline) return "";
+  if (baseline === null || baseline === 0 || value <= 0 || value === baseline) return "";
   const pct = ((value - baseline) / baseline) * 100;
   const sign = pct > 0 ? "+" : "";
   return ` (${sign}${pct.toFixed(1)}%)`;

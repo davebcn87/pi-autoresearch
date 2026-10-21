@@ -303,6 +303,8 @@
       metricUnit: '',
       direction: 'lower',
       baseline: null,
+      baselines: {},
+      segment: 0,
       best: null,
       bestRunIndex: -1,
     };
@@ -334,7 +336,7 @@
       if (!parsed.ok) return setMetaMessage('Invalid embedded data: ' + parsed.error, true);
 
       lastDataText = text;
-      applyParsedData(parsed.config, parsed.runs);
+      applyParsedData(parsed.config, parsed.runs, parsed.currentSegment);
       renderDashboard();
     }
 
@@ -395,10 +397,23 @@
         catch { return fail('One JSONL line is invalid JSON.'); }
       }
 
-      return normalizePayload(
-        objects.find(item => item.type === 'config') || null,
-        objects.filter(item => item.run != null)
-      );
+      return segmentedPayload(objects);
+    }
+
+    // Like reconstructJsonlState: a config entry after any run starts a new segment, and the latest config applies.
+    function segmentedPayload(items) {
+      let config = null;
+      let segment = 0;
+      const runs = [];
+      for (const item of items) {
+        if (item && item.type === 'config') {
+          if (runs.length > 0) segment += 1;
+          config = item;
+        } else if (item && item.run != null) {
+          runs.push(Object.assign({}, item, { segment }));
+        }
+      }
+      return normalizePayload(config, runs, segment);
     }
 
     function parseJsonDocument(text) {
@@ -407,10 +422,7 @@
       catch { return fail('JSON parse failed.'); }
 
       if (Array.isArray(doc)) {
-        return normalizePayload(
-          doc.find(item => item.type === 'config') || null,
-          doc.filter(item => item.run != null)
-        );
+        return segmentedPayload(doc);
       }
 
       if (doc && typeof doc === 'object') {
@@ -438,9 +450,10 @@
       return [];
     }
 
-    function normalizePayload(config, runs) {
+    function normalizePayload(config, runs, currentSegment) {
       const cfg = config || DEFAULT_CONFIG;
       if (!Array.isArray(runs) || runs.length === 0) return fail('No runs found.');
+      const normalizedRuns = runs.map(normalizeRun);
 
       return {
         ok: true,
@@ -450,7 +463,8 @@
           metricUnit: cfg.metricUnit || '',
           bestDirection: cfg.bestDirection === 'higher' ? 'higher' : 'lower',
         },
-        runs: runs.map(normalizeRun),
+        runs: normalizedRuns,
+        currentSegment: currentSegment ?? Math.max(...normalizedRuns.map(run => run.segment)),
       };
     }
 
@@ -463,16 +477,28 @@
         description: run.description || '',
         confidence: run.confidence,
         asi: run.asi || {},
+        segment: toNumber(run.segment, 0),
       };
     }
 
-    function applyParsedData(config, runs) {
+    function applyParsedData(config, runs, currentSegment) {
       session.config = config;
       session.runs = runs;
       session.metricUnit = config.metricUnit || '';
       session.direction = config.bestDirection || 'lower';
-      session.baseline = runs[0] ? runs[0].metric : null;
+      session.segment = currentSegment;
+      session.baselines = segmentBaselines(runs);
+      session.baseline = session.baselines[currentSegment] ?? null;
       findBestRun(runs);
+    }
+
+    // A segment's baseline is its first run with a measurement: crashes log a metric of 0.
+    function segmentBaselines(runs) {
+      const baselines = {};
+      for (const run of runs) {
+        if (!(run.segment in baselines) && run.status !== 'crash' && run.metric > 0) baselines[run.segment] = run.metric;
+      }
+      return baselines;
     }
 
     function findBestRun(runs) {
@@ -480,7 +506,7 @@
       session.bestRunIndex = -1;
 
       runs.forEach((run, index) => {
-        if (run.metric <= 0) return;
+        if (run.segment !== session.segment || run.metric <= 0) return;
         if (session.best == null || isBetter(run.metric, session.best)) {
           session.best = run.metric;
           session.bestRunIndex = index;
@@ -543,7 +569,7 @@
     }
 
     function deltaDisplay(run) {
-      const delta = computeDeltaPercent(run.metric, session.baseline);
+      const delta = computeDeltaPercent(run.metric, session.baselines[run.segment]);
       return { text: formatDelta(delta), className: 'mono delta ' + classifyDelta(delta, session.direction) };
     }
 
@@ -897,7 +923,7 @@
     }
 
     function tooltipBaselineDelta(run) {
-      const delta = computeDeltaPercent(run.metric, session.baseline);
+      const delta = computeDeltaPercent(run.metric, session.baselines[run.segment]);
       if (delta == null) return '';
       return tooltipDeltaLine(delta, 'vs baseline');
     }
@@ -924,8 +950,10 @@
     }
 
     function findBestBeforeRun(runIndex) {
+      const segment = session.runs[runIndex]?.segment;
       let best = null;
       for (let i = 0; i < runIndex; i += 1) {
+        if (session.runs[i].segment !== segment) continue;
         const metric = session.runs[i]?.metric;
         if (!metric || metric <= 0) continue;
         if (best == null || isBetter(metric, best)) best = metric;

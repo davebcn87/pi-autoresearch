@@ -150,6 +150,11 @@ export function isAutoresearchRunEntry(entry: unknown): entry is AutoresearchRun
   return isObjectRecord(entry) && typeof entry.run === "number";
 }
 
+/** Whether a run can be its segment's baseline: crashes log a metric of 0, and percentages need a measurement. */
+export function hasMeasurement(run: { status: string; metric: number }): boolean {
+  return run.status !== "crash" && run.metric > 0;
+}
+
 function firstConfigEntry(jsonlContent: string): AutoresearchConfigEntry | null {
   for (const line of nonEmptyLines(jsonlContent)) {
     const entry = parseJsonlEntry(line);

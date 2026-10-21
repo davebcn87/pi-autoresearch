@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- A segment's baseline is its first run with a measurement. When a session's first runs crashed, the baseline was their metric of 0, so the dashboard widget, `log_experiment` and the compaction summary showed no percentages (or `+Infinity%`). Crashed runs no longer show a delta against the baseline either.
+- The browser dashboard follows segments like the rest of the extension: after a re-init it takes the baseline, best run and metric settings from the current segment, and each run's delta from its own segment's baseline. It used the first run of the whole log, so a session whose first runs crashed showed `0 → best` and no percentages, even after re-initializing.
+
 ## [1.9.0] - 2026-10-06
 
 ### Added

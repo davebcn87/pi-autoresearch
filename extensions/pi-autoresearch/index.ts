@@ -47,6 +47,7 @@ import {
   isAutoresearchRunEntry,
   extractAutoresearchSessionName,
   reconstructJsonlState,
+  hasMeasurement,
 } from "./jsonl.ts";
 import {
   autoresearchSummaryPathsFor,
@@ -580,8 +581,8 @@ function validateWorkDir(ctxCwd: string): string | null {
 
 /** Baseline = first experiment in current segment */
 function findBaselineMetric(results: ExperimentResult[], segment: number): number | null {
-  const cur = currentResults(results, segment);
-  return cur.length > 0 ? cur[0].metric : null;
+  const baseline = results.find((r) => r.segment === segment && hasMeasurement(r));
+  return baseline ? baseline.metric : null;
 }
 
 /** Best = optimal metric across kept experiments in current segment (min for lower, max for higher) */
@@ -609,7 +610,7 @@ const autoresearchScriptPath = (dir: string) => sessionFilePath(dir, "measure");
 const autoresearchConfigPath = (dir: string) => sessionFilePath(dir, "config");
 
 function findBaselineRunNumber(results: ExperimentResult[], segment: number): number | null {
-  const index = results.findIndex((result) => result.segment === segment);
+  const index = results.findIndex((result) => result.segment === segment && hasMeasurement(result));
   return index >= 0 ? index + 1 : null;
 }
 
@@ -624,8 +625,9 @@ function findBaselineSecondary(
   knownMetrics?: MetricDef[]
 ): Record<string, number> {
   const cur = currentResults(results, segment);
-  const base: Record<string, number> = cur.length > 0
-    ? { ...(cur[0].metrics ?? {}) }
+  const baselineRun = cur.find(hasMeasurement);
+  const base: Record<string, number> = baselineRun
+    ? { ...(baselineRun.metrics ?? {}) }
     : {};
 
   // Fill in any known metrics missing from baseline with their first occurrence
@@ -984,7 +986,7 @@ function renderDashboardLines(
     );
   }
 
-  const baselineIndex = st.results.findIndex((x) => x.segment === st.currentSegment);
+  const baselineIndex = st.results.findIndex((x) => x.segment === st.currentSegment && hasMeasurement(x));
 
   for (let i = startIdx; i < st.results.length; i++) {
     const r = st.results[i];
@@ -2311,7 +2313,8 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
       if (state.bestMetric !== null) {
         text += `\nBaseline ${state.metricName}: ${formatNum(state.bestMetric, state.metricUnit)}`;
-        if (segmentCount > 1 && params.status === "keep" && params.metric > 0) {
+        const isBaselineRun = findBaselineRunNumber(state.results, state.currentSegment) === state.results.length;
+        if (!isBaselineRun && params.status === "keep" && params.metric > 0) {
           const delta = params.metric - state.bestMetric;
           const pct = ((delta / state.bestMetric) * 100).toFixed(1);
           const sign = delta > 0 ? "+" : "";
