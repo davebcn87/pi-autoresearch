@@ -2,7 +2,7 @@
   "name": "pi-autoresearch",
   "version": "1.9.0",
   "type": "module",
-  "description": "Autonomous experiment loop for pi — run, measure, keep or discard. Inspired by karpathy/autoresearch.",
+  "description": "Autonomous experiment loop for pi \u2014 run, measure, keep or discard. Inspired by karpathy/autoresearch.",
   "keywords": [
     "pi-package",
     "pi",
@@ -14,7 +14,7 @@
     "coding-agent"
   ],
   "license": "MIT",
-  "author": "David Cortés <477473+davebcn87@users.noreply.github.com>",
+  "author": "David Cort\u00e9s <477473+davebcn87@users.noreply.github.com>",
   "homepage": "https://github.com/davebcn87/pi-autoresearch#readme",
   "repository": {
     "type": "git",
@@ -51,12 +51,12 @@
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*",
-    "@sinclair/typebox": "*"
+    "typebox": "*"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "^0.74.0",
     "@earendil-works/pi-coding-agent": "^0.74.0",
     "@earendil-works/pi-tui": "^0.74.0",
-    "@sinclair/typebox": "^0.34.41"
+    "typebox": "^1.3.27"
   }
 }

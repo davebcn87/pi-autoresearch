@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- The extension imports `Type` from `typebox` instead of `@sinclair/typebox`. Pi provides `typebox` to extensions, but `@sinclair/typebox` was only a peer dependency, so a clean install without dev dependencies failed with `MODULE_NOT_FOUND`, and `pi-bolt compile` failed with "Could not resolve" (#98). The peer and dev dependencies now name `typebox` too.
+
 ## [1.9.0] - 2026-10-06
 
 ### Added
