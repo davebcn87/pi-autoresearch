@@ -486,6 +486,32 @@ test("Progress appends overall delta after a baseline reset, including after rel
   } finally { await rm(cwd, { recursive: true, force: true }); }
 });
 
+test("first-baseline comparison stays visible with the live metric name in narrow panes", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-overall-width-"));
+  try {
+    await mkdir(join(cwd, ".auto"), { recursive: true });
+    const config = { type: "config", name: "Beat vLLM", metricName: "proj_c1_dspark5_tps", metricUnit: "tok/s", bestDirection: "higher" };
+    await writeFile(join(cwd, ".auto/log.jsonl"), [
+      config,
+      { run: 1, metric: 0, status: "crash" },
+      { run: 2, metric: 22.239, status: "keep" },
+      { ...config, name: "75% HBM / 25% UVA" },
+      { run: 3, metric: 179.547, status: "keep" },
+      { run: 4, metric: 261.593, status: "keep" },
+    ].map(JSON.stringify).join("\n") + "\n");
+    const harness = createHarness({ cwd });
+    await harness.handlers.get("session_start")({}, harness.ctx);
+    const widget = harness.widgets.at(-1).widget({}, PLAIN_THEME);
+    for (const width of [20, 40, 60, 80, 120, 200]) {
+      const lines = widget.render(width);
+      const text = lines.join(" ").replace(/\s+/g, " ");
+      assert.match(text, /\(\+45.7%\)/, `current delta at width ${width}`);
+      assert.match(text, /\(\+1076.3% from first baseline\)/, `first delta at width ${width}`);
+      assert.ok(lines.every((line) => visibleWidth(line) <= width), `overflow at width ${width}`);
+    }
+  } finally { await rm(cwd, { recursive: true, force: true }); }
+});
+
 test("same-cwd persisted logs still auto-activate autoresearch", () => {
   assert.equal(
     shouldAutoActivateAutoresearch("/repo", "/repo", true),

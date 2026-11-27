@@ -25,7 +25,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { truncateTail, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { Text, truncateToWidth, matchesKey, visibleWidth } from "@earendil-works/pi-tui";
+import { Text, truncateToWidth, matchesKey, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { Type, type TSchema } from "typebox";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -900,7 +900,9 @@ function renderDashboardLines(
       const pct = ((bestPrimary - original.metric) / Math.abs(original.metric)) * 100;
       progressLine += th.fg("dim", ` (${pct >= 0 ? "+" : ""}${pct.toFixed(1)}% from first baseline)`);
     }
-    lines.push(truncateToWidth(progressLine, width));
+    // Keep both comparisons readable in narrow panes and with long metric
+    // names. Truncating this line silently hid the first-baseline suffix.
+    lines.push(...wrapTextWithAnsi(progressLine, Math.max(1, width)));
 
     // Progress secondary metrics — wrap into lines that fit width, indented
     if (st.secondaryMetrics.length > 0) {
