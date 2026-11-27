@@ -4,6 +4,29 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-11-27
+
+### Breaking Changes
+
+- **Unified 2-tool architecture (`init_experiment` + atomic `run_experiment`):** removed `log_experiment`. `run_experiment` now runs the benchmark (defaulting `command` to `./.auto/measure.sh`), executes `.auto/checks.sh`, parses `METRIC` and `TIMING` lines, automatically decides `keep` / `discard` / `crash` / `checks_failed`, commits or reverts code changes, logs to `.auto/log.jsonl`, and commits `.auto/` learnings in a single call. Passing commands that omit the required `METRIC <primary>=<number>` line report a format error without logging or modifying git; crashes and check failures are logged and auto-reverted.
+- **Explicit pause lifecycle for playbook-backed sessions:** when `.auto/prompt.md` exists, `/autoresearch pause`, legacy `/autoresearch off`, `/autoresearch clear`, Esc/user abort, exhausted native retries, and iteration/safety limits leave the session visibly **paused** (`autoresearch paused` in the widget and status bar, persisted across reloads) instead of silently turning off. Use `/autoresearch resume` (or `/autoresearch on`) to continue, and `/autoresearch finalize` or deleting `.auto/` to stop.
+- **Pi 1.7 lifecycle modernization:** replaced timer-based `agent_end` re-prompting with an explicit finite state machine (`loop-state.ts`) driving Pi's native abort-aware `turn_end` / `agent_before_settle` continuation boundaries and native provider retry/compaction handling.
+
+### Added
+
+- **Loop & step timing:** automatic `TIMING start/end run_experiment` markers (including failures, timeouts, and aborts), separate automatic `checks` timing, and optional custom `TIMING start/end <name> [unix_ms]` spans parsed before truncation. Displays readable full-loop duration and longest exclusive step (e.g. `Loop 7m 2s · run 32s · checks 10s · longest: agent/other 6m 20s`) in the widget, dashboards, and compaction summaries.
+- **First-baseline lifetime comparison:** after re-initializing a baseline on the same metric/unit/direction, the terminal widget, browser dashboard, and compaction summary retain a dimmed comparison against the first successful baseline (e.g. `(+45.7%) (+1076.3% from first baseline)`) with narrow-pane wrapping.
+- **Always-committed `.auto/` learnings:** `keep` commits pure code diffs first (matching `experiment.commit`), then commits `.auto/`; `discard`, `crash`, and `checks_failed` unstage and revert code changes while committing `.auto/` learnings on every run.
+- **Default 70% context-window compaction:** triggers deterministic persisted-state compaction between experiments at 70% of the active model's context window (`compactAtPercent: 70`, configurable or disableable via `.auto/config.json`, plus optional `compactAtTokens` and `compactEvery`). Compaction summaries now synthesize `## Kept Milestones` from `asi.finding` alongside the playbook and recent runs.
+- **Progressive-disclosure experiment params:** `run_experiment` accepts optional `hypothesis`, `prev_learning` (attached retroactively to the previous run's ASI with zero extra turns), `keep_on_tie`, `revisits_run`, and `asi`, emitting a one-line tip only when optional learning fields are omitted.
+
+### Fixed
+
+- **First-success baseline semantics:** crashes and `checks_failed` runs remain counted in history and never establish or overwrite the baseline.
+- **Marginal confidence score:** evaluates the latest kept gain over the *previous best* against a local noise floor instead of comparing cumulative session gain against global MAD, and omits "likely real" verdicts on discards/crashes.
+- **Skill & session-file auto-activation:** invoking `/skill:autoresearch-create` or creating `.auto/prompt.md` mid-session activates experiment tools immediately without requiring `/reload`.
+- **Clean Esc handling:** pressing Esc immediately halts and persists a paused state without firing a follow-up continue prompt, while normal assistant-text endings supply a hidden (`display: false`) continuation entry so Pi's `canContinue` boundary check always succeeds.
+
 ## [1.9.0] - 2026-10-06
 
 ### Added
