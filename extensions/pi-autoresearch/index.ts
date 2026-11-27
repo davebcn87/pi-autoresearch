@@ -126,11 +126,15 @@ interface ExperimentState {
   currentSegment: number;
   /** Maximum number of experiments before auto-stopping. null = unlimited. */
   maxExperiments: number | null;
-  /** Optional periodic deterministic compaction cadence (every N logged experiments). null = threshold only. */
+  /** Optional periodic deterministic compaction cadence (every N logged experiments). null = disabled. */
   compactEvery: number | null;
-  /** Current session confidence score (best improvement / noise floor). null if insufficient data. */
+  /** Token ceiling for deterministic compaction between iterations. null = disabled (default 180000). */
+  compactAtTokens: number | null;
+  /** Marginal confidence score (latest improvement over previous best / noise floor). null if insufficient data. */
   confidence: number | null;
 }
+
+export const DEFAULT_COMPACT_AT_TOKENS = 180_000;
 
 export const AUTORESUME_TURN_LIMIT = 200;
 export const CONSECUTIVE_FAILURE_OVERRIDE_LIMIT = 20;
@@ -201,6 +205,7 @@ interface AutoresearchRuntime {
   state: ExperimentState;
   iterationStartedAt?: number;
   lastRunTiming?: ExperimentTiming;
+  lastRunParsed?: { primary: number | null; metrics: Record<string, number> };
 }
 
 const AUTORESEARCH_RESUME_MESSAGE = "pi-autoresearch.resume";
@@ -256,11 +261,11 @@ const InitParams = Type.Object({
 });
 
 export const LogParams = Type.Object({
-  commit: Type.String({ description: "Git commit hash (short, 7 chars)" }),
-  metric: Type.Number({
+  commit: Type.Optional(Type.String({ description: "Git commit hash (short, 7 chars). Optional — auto-detected from HEAD (and updated after auto-commit on keep)." })),
+  metric: Type.Optional(Type.Number({
     description:
-      "The primary optimization metric value (e.g. seconds, val_bpb). 0 for crashes.",
-  }),
+      "The primary optimization metric value (e.g. seconds, val_bpb). Optional — auto-filled from the last run_experiment's parsed METRIC line (or 0 for crashes).",
+  })),
   status: StringEnum(["keep", "discard", "crash", "checks_failed"] as const),
   description: Type.String({
     description: "Short description of what this experiment tried",
@@ -269,7 +274,7 @@ export const LogParams = Type.Object({
     Type.Object({}, {
       additionalProperties: Type.Number(),
       description:
-        'Additional metrics to track as { name: value } pairs, e.g. { "compile_µs": 4200, "render_µs": 9800 }. These are shown alongside the primary metric for tradeoff monitoring.',
+        'Additional metrics as { name: value } pairs. Optional — auto-filled from the last run_experiment\'s parsed METRIC lines; pass only to override or when the script did not emit METRIC lines.',
     })
   ),
   force: Type.Optional(
@@ -454,16 +459,16 @@ function sortedMedian(values: number[]): number {
 }
 
 /**
- * Compute confidence score for the best improvement vs. session noise floor.
+ * Compute confidence score for the latest kept improvement vs. local noise floor.
  *
- * Uses Median Absolute Deviation (MAD) of all metric values in the current
- * segment as a robust noise estimator. Returns `|best_delta| / MAD`, where
- * best_delta is the improvement of the best kept metric over baseline.
+ * Uses the marginal gain of the best kept metric over the *previous* best kept
+ * metric (falling back to baseline when only one improvement exists), divided by
+ * a local noise floor: min(MAD of segment values, median adjacent step delta)
+ * so monotonic progress across many runs doesn't mask a tiny marginal blip.
  *
- * Returns null when there are fewer than 3 data points (insufficient data)
- * or when MAD is 0 (all values identical — no measurable noise).
+ * Returns null when there are fewer than 3 valid data points or zero noise.
  */
-function computeConfidence(
+export function computeConfidence(
   results: ExperimentResult[],
   segment: number,
   direction: "lower" | "higher"
@@ -476,24 +481,37 @@ function computeConfidence(
   const deviations = values.map((v) => Math.abs(v - median));
   const mad = sortedMedian(deviations);
 
-  if (mad === 0) return null;
+  const stepDeltas: number[] = [];
+  for (let i = 1; i < values.length; i++) {
+    const d = Math.abs(values[i] - values[i - 1]);
+    if (d > 0) stepDeltas.push(d);
+  }
+  const stepMedian = stepDeltas.length > 0 ? sortedMedian(stepDeltas) : 0;
+  const noiseFloor = mad > 0 && stepMedian > 0 ? Math.min(mad, stepMedian) : (mad || stepMedian);
+
+  if (noiseFloor === 0) return null;
 
   const baseline = findBaselineMetric(results, segment);
   if (baseline === null) return null;
 
-  // Find best kept metric in current segment
+  // Track best and previous-best kept improvements in chronological order.
   let bestKept: number | null = null;
+  let prevBestKept: number | null = null;
   for (const r of cur) {
     if (r.status === "keep" && r.metric > 0) {
-      if (bestKept === null || isBetter(r.metric, bestKept, direction)) {
+      if (bestKept === null) {
+        bestKept = r.metric;
+      } else if (isBetter(r.metric, bestKept, direction)) {
+        prevBestKept = bestKept;
         bestKept = r.metric;
       }
     }
   }
   if (bestKept === null || bestKept === baseline) return null;
 
-  const delta = Math.abs(bestKept - baseline);
-  return delta / mad;
+  const reference = prevBestKept ?? baseline;
+  const marginalDelta = Math.abs(bestKept - reference);
+  return marginalDelta / noiseFloor;
 }
 
 /** Get results in the current segment only */
@@ -504,6 +522,7 @@ function currentResults(results: ExperimentResult[], segment: number): Experimen
 interface AutoresearchConfig {
   maxIterations?: number;
   compactEvery?: number;
+  compactAtTokens?: number | false;
   workingDir?: string;
 }
 
@@ -532,6 +551,16 @@ function readCompactEvery(cwd: string): number | null {
   return (typeof config.compactEvery === "number" && config.compactEvery > 0)
     ? Math.floor(config.compactEvery)
     : null;
+}
+
+/** Read token ceiling for deterministic compaction (default 180k; 0 or false disables). */
+function readCompactAtTokens(cwd: string): number | null {
+  const config = readConfig(cwd);
+  if (config.compactAtTokens === false || config.compactAtTokens === 0) return null;
+  if (typeof config.compactAtTokens === "number" && config.compactAtTokens > 0) {
+    return Math.floor(config.compactAtTokens);
+  }
+  return DEFAULT_COMPACT_AT_TOKENS;
 }
 
 /**
@@ -770,6 +799,7 @@ function createExperimentState(): ExperimentState {
     currentSegment: 0,
     maxExperiments: null,
     compactEvery: null,
+    compactAtTokens: DEFAULT_COMPACT_AT_TOKENS,
     confidence: null,
   };
 }
@@ -778,6 +808,7 @@ function createExperimentState(): ExperimentState {
 function refreshConfigLimits(cwd: string, state: ExperimentState): void {
   state.maxExperiments = readMaxExperiments(cwd);
   state.compactEvery = readCompactEvery(cwd);
+  state.compactAtTokens = readCompactAtTokens(cwd);
 }
 
 function createSessionRuntime(): AutoresearchRuntime {
@@ -1196,6 +1227,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     if (event.type === "pause" || event.type === "deactivate" || event.type === "session_restored") {
       runtime.iterationStartedAt = undefined;
       runtime.lastRunTiming = undefined;
+      runtime.lastRunParsed = undefined;
     }
     const { state: nextLoop, effects } = transitionLoop(runtime.loop, event);
     runtime.loop = nextLoop;
@@ -1211,6 +1243,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     if (newlyPaused) {
       runtime.iterationStartedAt = undefined;
       runtime.lastRunTiming = undefined;
+      runtime.lastRunParsed = undefined;
       // Explicit pause records its decision at the command boundary already.
       if (event.type !== "pause") recordAutoresearchActivation(resolveWorkDir(ctx.cwd), false, true);
     }
@@ -1632,6 +1665,12 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     dispatchLoop(ctx, { type: "session_compact_failed" });
   });
 
+  const isContextOverCompactionLimit = (ctx: ExtensionContext, state: ExperimentState): boolean => {
+    if (state.compactAtTokens === null) return false;
+    const tokens = ctx.getContextUsage?.()?.tokens;
+    return typeof tokens === "number" && Number.isFinite(tokens) && tokens >= state.compactAtTokens;
+  };
+
   pi.on("turn_end", async (event, ctx) => {
     const recovered = event.outcome === "completed" && recoverModeFromSessionFiles(ctx);
     const runtime = getRuntime(ctx);
@@ -1640,6 +1679,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       type: "turn_end",
       outcome: event.outcome,
       compactEvery: runtime.state.compactEvery,
+      contextOverLimit: isContextOverCompactionLimit(ctx, runtime.state),
       stopReason: currentStopReason(runtime),
     });
     if (cont) return buildBoundaryContinuation(ctx, event.entries, cont, event.context?.canContinue === true);
@@ -1673,6 +1713,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       type: "agent_before_settle",
       outcome: event.outcome,
       compactEvery: runtime.state.compactEvery,
+      contextOverLimit: isContextOverCompactionLimit(ctx, runtime.state),
       stopReason: currentStopReason(runtime),
     });
     return cont ? buildBoundaryContinuation(ctx, event.entries, cont, event.context?.canContinue === true) : undefined;
@@ -1969,6 +2010,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       let runTiming: ExperimentTiming;
       let runEndedAt = t0;
       runtime.lastRunTiming = undefined;
+      runtime.lastRunParsed = undefined;
       const automaticStart = `TIMING start run_experiment ${t0}`;
       onUpdate?.({ content: [{ type: "text", text: automaticStart }], details: {} });
 
@@ -2211,6 +2253,15 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         ? Object.fromEntries(parsedMetricMap)
         : null;
       const parsedPrimary = parsedMetricMap.get(state.metricName) ?? null;
+      const parsedSecondary: Record<string, number> = {};
+      if (parsedMetrics) {
+        for (const [k, v] of Object.entries(parsedMetrics)) {
+          if (k !== state.metricName) parsedSecondary[k] = v;
+        }
+      }
+      if (canRecordTiming()) {
+        runtime.lastRunParsed = { primary: parsedPrimary, metrics: parsedSecondary };
+      }
 
       const details: RunDetails = {
         command: params.command,
@@ -2276,8 +2327,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
           text += ` ${name}=${formatNum(value, unit)}`;
         }
 
-        // Machine-ready values for log_experiment (raw numbers, not formatted)
-        text += `\nUse these values directly in log_experiment (metric: ${parsedPrimary ?? "?"}, metrics: {${secondary.map(([k, v]) => `"${k}": ${v}`).join(", ")}})\n`;
+        text += `\n(log_experiment auto-fills metric, metrics, and commit from this run unless overridden)\n`;
       }
 
       text += `\n${llmTruncation.content}`;
@@ -2447,12 +2497,12 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     description:
       "Record an experiment result. Tracks metrics, updates the status widget and dashboard. Call after every run_experiment.",
     promptSnippet:
-      "Log experiment result (commit, metric, status, description)",
+      "Log experiment result (status, description; metric, metrics, commit auto-fill from last run_experiment)",
     promptGuidelines: [
-      "Always call log_experiment after run_experiment to record the result.",
-      "log_experiment automatically runs git add -A && git commit on 'keep', and auto-reverts code changes on 'discard'/'crash'/'checks_failed' (autoresearch files are preserved). Do NOT commit or revert manually.",
+      "Always call log_experiment after run_experiment to record the result. metric, secondary metrics, and commit are auto-filled from run_experiment / HEAD unless you override them.",
+      "log_experiment automatically stages and commits code changes (excluding .auto/ session files) on 'keep', and auto-reverts code changes on 'discard'/'crash'/'checks_failed' (preserving .auto/ files). Do NOT commit or revert manually.",
       "Use status 'keep' if the PRIMARY metric improved. 'discard' if worse or unchanged. 'crash' if it failed. Secondary metrics are for monitoring — they almost never affect keep/discard. Only discard a primary improvement if a secondary metric degraded catastrophically, and explain why in the description.",
-      "log_experiment reports a confidence score after 3+ runs (best improvement as a multiple of the noise floor). ≥2.0× = likely real, <1.0× = within noise. If confidence is below 1.0×, consider re-running the same experiment to confirm before keeping. The score is advisory — it never auto-discards.",
+      "On 'keep', log_experiment reports marginal confidence (gain over previous best vs. local noise floor) after 3+ runs. ≥2.0× = likely real, <1.0× = within noise — consider a verification rerun before keeping. Advisory only.",
       "If you discover complex but promising optimizations you won't pursue immediately, append them as bullet points to .auto/ideas.md. Don't let good ideas get lost.",
       "Always include the asi parameter. At minimum: {\"hypothesis\": \"what you tried\"}. On discard/crash, also include rollback_reason and next_action_hint. Add any other key/value pairs that capture what you learned — dead ends, surprising findings, error details, bottlenecks. This is the only structured memory that survives reverts.",
       "When log_experiment records a retry of a previously discarded idea after its assumptions changed, set asi.revisits_run to the earlier run number (a positive integer) and explain what changed in description. Omit revisits_run for new ideas and verification reruns.",
@@ -2479,8 +2529,23 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       }
       const workDir = resolveWorkDir(ctx.cwd);
       refreshConfigLimits(ctx.cwd, state);
-      const secondaryMetrics = (params.metrics ?? {}) as Record<string, number>;
       const status = params.status as ExperimentResult["status"];
+      const parsed = runtime.lastRunParsed;
+      const metric = typeof params.metric === "number" && Number.isFinite(params.metric)
+        ? params.metric
+        : status === "crash"
+          ? 0
+          : parsed?.primary ?? null;
+      if (metric === null) {
+        return {
+          content: [{ type: "text", text: `❌ Missing metric — pass metric explicitly or emit "METRIC ${state.metricName}=<value>" from run_experiment.` }],
+          details: {},
+        };
+      }
+      const secondaryMetrics: Record<string, number> = {
+        ...(status === "crash" ? {} : (parsed?.metrics ?? {})),
+        ...((params.metrics ?? {}) as Record<string, number>),
+      };
 
       if (status === "keep" && runtime.loop.lastRunPassed === false) {
         return {
@@ -2500,8 +2565,9 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         };
       }
 
-      // Validate secondary metrics consistency (after first experiment establishes them)
-      if (state.secondaryMetrics.length > 0) {
+      // Validate secondary metrics consistency (after first experiment establishes them).
+      // Crashes often abort before printing metrics, so don't reject missing metrics on crash.
+      if (state.secondaryMetrics.length > 0 && status !== "crash") {
         const knownNames = new Set(state.secondaryMetrics.map((m) => m.name));
         const providedNames = new Set(Object.keys(secondaryMetrics));
 
@@ -2530,10 +2596,24 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         }
       }
 
+      // Resolve commit SHA from explicit arg or current git HEAD.
+      let commitSha = typeof params.commit === "string" ? params.commit.trim().slice(0, 7) : "";
+      if (!commitSha) {
+        try {
+          const headResult = await pi.exec("git", ["rev-parse", "--short=7", "HEAD"], { cwd: workDir, timeout: 5000 });
+          if (headResult.code === 0) commitSha = (headResult.stdout || "").trim().slice(0, 7);
+        } catch {
+          // Non-git workdir: leave commit empty
+        }
+      }
+
       // ASI: agent-supplied free-form diagnostics
       const mergedASI = (params.asi && Object.keys(params.asi).length > 0)
         ? params.asi as ASI
         : undefined;
+
+      // Capture previous best BEFORE recording this run so we can report marginal delta.
+      const prevBest = findBestMetric(state.results, state.currentSegment, state.bestDirection);
 
       // Cycle boundaries are log-entry to log-entry: the previous log's git/hooks,
       // agent reasoning, editing/other tools, benchmark and checks are all covered.
@@ -2544,9 +2624,10 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       } : undefined;
       runtime.iterationStartedAt = loopEndedAt;
       runtime.lastRunTiming = undefined;
+      runtime.lastRunParsed = undefined;
       const experiment: ExperimentResult = {
-        commit: params.commit.slice(0, 7),
-        metric: params.metric,
+        commit: commitSha,
+        metric,
         metrics: secondaryMetrics,
         status,
         description: params.description,
@@ -2578,7 +2659,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       // Baseline = first successful kept run in current segment
       state.bestMetric = findBaselineMetric(state.results, state.currentSegment);
 
-      // Compute confidence score (best improvement as multiple of noise floor)
+      // Compute marginal confidence score (latest kept gain / local noise floor)
       state.confidence = computeConfidence(state.results, state.currentSegment, state.bestDirection);
       experiment.confidence = state.confidence;
 
@@ -2588,18 +2669,26 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
       if (state.bestMetric !== null) {
         text += `\nBaseline ${state.metricName}: ${formatNum(state.bestMetric, state.metricUnit)}`;
-        if (segmentCount > 1 && params.status === "keep" && params.metric > 0) {
-          const delta = params.metric - state.bestMetric;
-          const pct = ((delta / state.bestMetric) * 100).toFixed(1);
-          const sign = delta > 0 ? "+" : "";
-          text += ` | this: ${formatNum(params.metric, state.metricUnit)} (${sign}${pct}%)`;
+        if (segmentCount > 1 && metric > 0 && (status === "keep" || status === "discard")) {
+          const deltas: string[] = [];
+          if (prevBest !== null && prevBest !== 0 && metric !== prevBest) {
+            const db = metric - prevBest;
+            const pb = ((db / Math.abs(prevBest)) * 100).toFixed(1);
+            deltas.push(`${db > 0 ? "+" : ""}${pb}% vs best`);
+          }
+          if (state.bestMetric !== 0 && metric !== state.bestMetric) {
+            const d0 = metric - state.bestMetric;
+            const p0 = ((d0 / Math.abs(state.bestMetric)) * 100).toFixed(1);
+            deltas.push(`${d0 > 0 ? "+" : ""}${p0}% vs baseline`);
+          }
+          text += ` | this: ${formatNum(metric, state.metricUnit)}${deltas.length ? ` (${deltas.join(", ")})` : ""}`;
         }
       }
 
       if (timing) text += `\n⏱ ${timingSummary(timing)}`;
       const original = firstComparableBaseline(state.results, state.metricName, state.metricUnit, state.bestDirection);
       if (original && original.segment !== state.currentSegment && original.metric !== 0 && status === "keep") {
-        const pct = (params.metric - original.metric) / Math.abs(original.metric) * 100;
+        const pct = (metric - original.metric) / Math.abs(original.metric) * 100;
         text += `\nOverall: ${pct >= 0 ? "+" : ""}${pct.toFixed(1)}% from first baseline`;
       }
 
@@ -2635,15 +2724,15 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         }
       }
 
-      // Show confidence score
-      if (state.confidence !== null) {
+      // Show marginal confidence score on kept improvements only (never say "likely real" on a discard/crash)
+      if (status === "keep" && state.confidence !== null) {
         const confStr = state.confidence.toFixed(1);
         if (state.confidence >= 2.0) {
-          text += `\n📊 Confidence: ${confStr}× noise floor — improvement is likely real`;
+          text += `\n📊 Marginal confidence: ${confStr}× noise floor — gain over previous best is likely real`;
         } else if (state.confidence >= 1.0) {
-          text += `\n📊 Confidence: ${confStr}× noise floor — improvement is above noise but marginal`;
+          text += `\n📊 Marginal confidence: ${confStr}× noise floor — gain over previous best is marginal`;
         } else {
-          text += `\n⚠️ Confidence: ${confStr}× noise floor — improvement is within noise. Consider re-running to confirm before keeping.`;
+          text += `\n⚠️ Marginal confidence: ${confStr}× noise floor — gain over previous best is within noise. Consider a verification rerun.`;
         }
       }
 
@@ -2653,19 +2742,26 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       }
       text += `)`;
 
-      // Auto-commit only on keep — discards/crashes get reverted anyway
-      if (params.status === "keep") {
+      const gitExcludes = [
+        `:(exclude,glob)**/${AUTO_DIR}`,
+        `:(exclude,glob)**/${AUTO_DIR}/**`,
+        `:(exclude,glob)**/autoresearch.*`,
+        `:(exclude,glob)**/autoresearch.*/**`,
+      ];
+
+      // Auto-commit code changes only on keep — keep .auto/ session files out of code commits
+      if (status === "keep") {
         try {
           const resultData: Record<string, unknown> = {
-            status: params.status,
-            [state.metricName || "metric"]: params.metric,
+            status,
+            [state.metricName || "metric"]: metric,
             ...secondaryMetrics,
           };
           const trailerJson = JSON.stringify(resultData);
           const commitMsg = `${params.description}\n\nResult: ${trailerJson}`;
 
           const execOpts = { cwd: workDir, timeout: 10000 };
-          const addResult = await pi.exec("git", ["add", "-A"], execOpts);
+          const addResult = await pi.exec("git", ["add", "-A", "--", ".", ...gitExcludes], execOpts);
           if (addResult.code !== 0) {
             const addErr = (addResult.stdout + addResult.stderr).trim();
             throw new Error(`git add failed (exit ${addResult.code}): ${addErr.slice(0, 200)}`);
@@ -2715,14 +2811,15 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         text += `\n⚠️ Failed to write .auto/log.jsonl: ${e instanceof Error ? e.message : String(e)}`;
       }
 
-      if (params.status !== "keep") {
+      if (status !== "keep") {
         try {
           const revertScript = `
+            git reset -q HEAD -- . ':(exclude,glob)**/${AUTO_DIR}' ':(exclude,glob)**/${AUTO_DIR}/**' ':(exclude,glob)**/autoresearch.*' ':(exclude,glob)**/autoresearch.*/**' 2>/dev/null || true
             git checkout -- . ':(exclude,glob)**/${AUTO_DIR}' ':(exclude,glob)**/${AUTO_DIR}/**' ':(exclude,glob)**/autoresearch.*' ':(exclude,glob)**/autoresearch.*/**'
             git clean -fd -e '${AUTO_DIR}' -e '**/${AUTO_DIR}/**' -e 'autoresearch.*' -e '**/autoresearch.*/**' 2>/dev/null
           `;
           await pi.exec("bash", ["-c", revertScript], { cwd: workDir, timeout: 10000 });
-          text += `\n📝 Git: reverted changes (${params.status}) — autoresearch files preserved`;
+          text += `\n📝 Git: reverted changes (${status}) — autoresearch files preserved`;
         } catch (e) {
           text += `\n⚠️ Git revert failed: ${e instanceof Error ? e.message : String(e)}`;
         }

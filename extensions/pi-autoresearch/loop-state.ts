@@ -58,6 +58,7 @@ export type LoopEvent =
       readonly type: "turn_end";
       readonly outcome: "completed" | "aborted" | "error";
       readonly compactEvery: number | null;
+      readonly contextOverLimit?: boolean;
       readonly stopReason: string | null;
     }
   | { readonly type: "agent_end" }
@@ -65,6 +66,7 @@ export type LoopEvent =
       readonly type: "agent_before_settle";
       readonly outcome: "completed" | "aborted" | "error";
       readonly compactEvery: number | null;
+      readonly contextOverLimit?: boolean;
       readonly stopReason: string | null;
     }
   | { readonly type: "agent_settled"; readonly aborted: boolean };
@@ -245,7 +247,9 @@ export function transitionLoop(state: LoopState, event: LoopEvent): LoopTransiti
       if (state.phase !== "running" || event.outcome !== "completed") {
         return transition(state);
       }
-      if (event.compactEvery === null || state.experimentsSinceCompact < event.compactEvery) {
+      const dueByCount = event.compactEvery !== null && state.experimentsSinceCompact >= event.compactEvery;
+      const dueByTokens = event.contextOverLimit === true && state.experimentsSinceCompact > 0;
+      if (!dueByCount && !dueByTokens) {
         return transition(state);
       }
       if (event.stopReason !== null) {
@@ -313,8 +317,8 @@ export function transitionLoop(state: LoopState, event: LoopEvent): LoopTransiti
 
       const shouldCompact =
         !wasCompacted &&
-        event.compactEvery !== null &&
-        base.experimentsSinceCompact >= event.compactEvery;
+        ((event.compactEvery !== null && base.experimentsSinceCompact >= event.compactEvery) ||
+          (event.contextOverLimit === true && base.experimentsSinceCompact > 0));
       const nextTurn = base.autoResumeTurns + 1;
       const compacted = wasCompacted || shouldCompact;
 
