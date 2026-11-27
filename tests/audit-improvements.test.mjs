@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -158,6 +162,63 @@ test("token-ceiling compaction triggers at default 180k and can be disabled in c
     await h.tools.get("log_experiment").execute("l2", { status: "keep", metric: 110, description: "second" }, undefined, undefined, h.ctx);
     const turnEnd2 = await h.handlers.get("turn_end")({ outcome: "completed", entries: [], continue: false, toolResults: [] }, h.ctx);
     assert.equal(turnEnd2, undefined);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("real git repo commits .auto/ learnings on every run (keep and discard) while keeping code commits clean", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-realgit-"));
+  const runRealExec = async (cmd, args, opts) => {
+    try {
+      const { stdout, stderr } = await execFileAsync(cmd, args, { cwd: opts?.cwd ?? cwd });
+      return { code: 0, stdout, stderr };
+    } catch (e) {
+      return { code: typeof e.code === "number" ? e.code : 1, stdout: e.stdout ?? "", stderr: e.stderr ?? "" };
+    }
+  };
+  try {
+    await runRealExec("git", ["init", "-b", "main"], { cwd });
+    await runRealExec("git", ["config", "user.email", "test@example.com"], { cwd });
+    await runRealExec("git", ["config", "user.name", "Test"], { cwd });
+    await writeFile(join(cwd, "app.txt"), "v0\n");
+    await runRealExec("git", ["add", "-A"], { cwd });
+    await runRealExec("git", ["commit", "-m", "initial"], { cwd });
+
+    const h = makeHarness({ cwd, onExec: runRealExec });
+    await h.tools.get("init_experiment").execute("init", { name: "TPS", metric_name: "tps", direction: "higher" }, undefined, undefined, h.ctx);
+    await writeFile(join(cwd, ".auto/prompt.md"), "# Optimize app\n");
+    await writeFile(join(cwd, "app.txt"), "v1\n");
+
+    // 1. Keep: code commit has app.txt only; .auto commit checks in .auto/log.jsonl & prompt.md.
+    const keepRes = await h.tools.get("log_experiment").execute("k1", {
+      status: "keep", metric: 100, description: "v1 improvement", asi: { hypothesis: "fast path" },
+    }, undefined, undefined, h.ctx);
+    const keepSha = keepRes.details.experiment.commit;
+    const keepFiles = (await runRealExec("git", ["diff-tree", "--no-commit-id", "--name-only", "-r", keepSha], { cwd })).stdout.trim().split("\n");
+    assert.deepEqual(keepFiles, ["app.txt"]);
+    const headMsgAfterKeep = (await runRealExec("git", ["log", "-1", "--format=%s"], { cwd })).stdout.trim();
+    assert.match(headMsgAfterKeep, /^chore\(autoresearch\): #1 keep/);
+    const statusAfterKeep = (await runRealExec("git", ["status", "--porcelain"], { cwd })).stdout.trim();
+    assert.equal(statusAfterKeep, "");
+
+    // 2. Discard: revert code (including staged & untracked code), but commit .auto/ learnings!
+    await writeFile(join(cwd, "app.txt"), "bad-code\n");
+    await writeFile(join(cwd, "scratch.tmp"), "untracked\n");
+    await runRealExec("git", ["add", "app.txt"], { cwd });
+    await writeFile(join(cwd, ".auto/ideas.md"), "- learned why bad-code failed\n");
+
+    await h.tools.get("log_experiment").execute("d1", {
+      status: "discard", metric: 50, description: "regressed", asi: { hypothesis: "bad idea", rollback_reason: "2x slower" },
+    }, undefined, undefined, h.ctx);
+
+    assert.equal(await readFile(join(cwd, "app.txt"), "utf8"), "v1\n");
+    const headMsgAfterDiscard = (await runRealExec("git", ["log", "-1", "--format=%s"], { cwd })).stdout.trim();
+    assert.match(headMsgAfterDiscard, /^chore\(autoresearch\): #2 discard/);
+    const discardFiles = (await runRealExec("git", ["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"], { cwd })).stdout.trim().split("\n").sort();
+    assert.deepEqual(discardFiles, [".auto/ideas.md", ".auto/log.jsonl"]);
+    const statusAfterDiscard = (await runRealExec("git", ["status", "--porcelain"], { cwd })).stdout.trim();
+    assert.equal(statusAfterDiscard, "");
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }

@@ -2500,7 +2500,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       "Log experiment result (status, description; metric, metrics, commit auto-fill from last run_experiment)",
     promptGuidelines: [
       "Always call log_experiment after run_experiment to record the result. metric, secondary metrics, and commit are auto-filled from run_experiment / HEAD unless you override them.",
-      "log_experiment automatically stages and commits code changes (excluding .auto/ session files) on 'keep', and auto-reverts code changes on 'discard'/'crash'/'checks_failed' (preserving .auto/ files). Do NOT commit or revert manually.",
+      "log_experiment automatically commits code changes on 'keep', auto-reverts code changes on 'discard'/'crash'/'checks_failed', and always commits .auto/ session learnings/history on every run. Do NOT commit or revert manually.",
       "Use status 'keep' if the PRIMARY metric improved. 'discard' if worse or unchanged. 'crash' if it failed. Secondary metrics are for monitoring — they almost never affect keep/discard. Only discard a primary improvement if a secondary metric degraded catastrophically, and explain why in the description.",
       "On 'keep', log_experiment reports marginal confidence (gain over previous best vs. local noise floor) after 3+ runs. ≥2.0× = likely real, <1.0× = within noise — consider a verification rerun before keeping. Advisory only.",
       "If you discover complex but promising optimizations you won't pursue immediately, append them as bullet points to .auto/ideas.md. Don't let good ideas get lost.",
@@ -2819,10 +2819,44 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
             git clean -fd -e '${AUTO_DIR}' -e '**/${AUTO_DIR}/**' -e 'autoresearch.*' -e '**/autoresearch.*/**' 2>/dev/null
           `;
           await pi.exec("bash", ["-c", revertScript], { cwd: workDir, timeout: 10000 });
-          text += `\n📝 Git: reverted changes (${status}) — autoresearch files preserved`;
+          text += `\n📝 Git: reverted code changes (${status}) — .auto/ preserved`;
         } catch (e) {
           text += `\n⚠️ Git revert failed: ${e instanceof Error ? e.message : String(e)}`;
         }
+      }
+
+      // Always commit .auto/ (and legacy autoresearch.* files) on every run —
+      // including discards/crashes — so learnings, logs, and playbook updates are persisted in git.
+      try {
+        const execOpts = { cwd: workDir, timeout: 10000 };
+        const sessionPaths: string[] = [];
+        if (fs.existsSync(path.join(workDir, AUTO_DIR))) sessionPaths.push(AUTO_DIR);
+        try {
+          for (const entry of fs.readdirSync(workDir)) {
+            if (entry.startsWith("autoresearch.")) sessionPaths.push(entry);
+          }
+        } catch {
+          // ignore readdir failure
+        }
+        if (sessionPaths.length > 0) {
+          const stageAuto = await pi.exec("git", ["add", "-A", "--", ...sessionPaths], execOpts);
+          if (stageAuto.code === 0) {
+            const diffAuto = await pi.exec("git", ["diff", "--cached", "--quiet", "--", ...sessionPaths], execOpts);
+            if (diffAuto.code !== 0) {
+              const autoMsg = `chore(autoresearch): #${state.results.length} ${status} — ${params.description}`;
+              const commitAuto = await pi.exec("git", ["commit", "-m", autoMsg, "--", ...sessionPaths], execOpts);
+              if (commitAuto.code === 0) {
+                const firstLine = (commitAuto.stdout + commitAuto.stderr).trim().split("\n")[0] || "";
+                text += `\n📝 Git (.auto): committed learnings — ${firstLine}`;
+              } else {
+                const errOut = (commitAuto.stdout + commitAuto.stderr).trim();
+                text += `\n⚠️ Git (.auto) commit failed (exit ${commitAuto.code}): ${errOut.slice(0, 200)}`;
+              }
+            }
+          }
+        }
+      } catch (e) {
+        text += `\n⚠️ Git (.auto) commit error: ${e instanceof Error ? e.message : String(e)}`;
       }
 
       const afterSteer = await fireHook({
