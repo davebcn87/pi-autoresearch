@@ -17,6 +17,7 @@ The optional `.auto/config.json` file lives under the Pi session directory. Path
 | --- | --- | --- |
 | `workingDir` | string | Runs file operations, Git, hooks, and experiments in another existing directory. Relative paths resolve from the Pi session directory. |
 | `maxIterations` | number | Stops the active segment after this many logged experiments. Start a new segment to continue. |
+| `compactEvery` | number | Optional periodic deterministic compaction cadence: every N logged experiments, emit a lossless persisted-state compaction boundary (`firstKeptEntryId: null`). Omit to preserve prompt-cache continuity and compact only at Pi's normal context threshold. |
 
 > **Important:** The config file remains in the session directory even when `workingDir` points elsewhere.
 

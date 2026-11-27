@@ -9,8 +9,8 @@
  * - `log_experiment` tool — records results with session-persisted state
  * - Status widget showing experiment count + best metric
  * - Fullscreen dashboard overlay via /autoresearch dashboard (opt-in shortcuts available)
- * - Adds autoresearch guidance to the system prompt and points the agent at .auto/prompt.md
- * - Injects .auto/prompt.md into context on every turn via before_agent_start
+ * - Adds autoresearch guidance via before_agent_start systemPromptOptions.sections (cache-safe)
+ * - Auto-resumes cleanly via agent_before_settle (and supports optional compactEvery resets)
  */
 
 import type {
@@ -19,12 +19,14 @@ import type {
   ExtensionCommandContext,
   ExtensionContext,
   SessionBeforeCompactEvent,
+  SessionBoundaryDraft,
   Theme,
+  ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { truncateTail, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Text, truncateToWidth, matchesKey, visibleWidth } from "@earendil-works/pi-tui";
-import { Type } from "@sinclair/typebox";
+import { Type, type TSchema } from "typebox";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -55,6 +57,14 @@ import {
 import { resolveAutoresearchShortcuts, SHORTCUT_ACTIONS } from "./shortcuts.ts";
 import { getAutoresearchArgumentCompletions, isHelpRequest, renderAutoresearchHelp } from "./commands.ts";
 import { sessionFilePath, sessionFileCandidates, ensureParentDir, AUTO_DIR } from "./paths.ts";
+import {
+  createLoopState,
+  isLoopActive,
+  transitionLoop,
+  type LoopEffect,
+  type LoopEvent,
+  type LoopState,
+} from "./loop-state.ts";
 
 // ---------------------------------------------------------------------------
 // Experiment output limits (sent to LLM — keep small to save context)
@@ -109,6 +119,8 @@ interface ExperimentState {
   currentSegment: number;
   /** Maximum number of experiments before auto-stopping. null = unlimited. */
   maxExperiments: number | null;
+  /** Optional periodic deterministic compaction cadence (every N logged experiments). null = threshold only. */
+  compactEvery: number | null;
   /** Current session confidence score (best improvement / noise floor). null if insufficient data. */
   confidence: number | null;
 }
@@ -178,17 +190,15 @@ interface LogDetails {
 }
 
 interface AutoresearchRuntime {
-  autoresearchMode: boolean;
-  experimentsThisSession: number;
-  autoResumeTurns: number;
-  lastRunChecks: { pass: boolean; output: string; duration: number } | null;
-  lastRunDuration: number | null;
-  runningExperiment: { startedAt: number; command: string } | null;
+  loop: LoopState;
   state: ExperimentState;
-  /** Pending auto-resume timer; cancelled when the agent starts a new run or compacts. */
-  pendingResumeTimer: ReturnType<typeof setTimeout> | null;
-  /** Resume message to send when the pending timer fires. */
-  pendingResumeMessage: string | null;
+}
+
+const AUTORESEARCH_RESUME_MESSAGE = "pi-autoresearch.resume";
+
+interface AutoresearchResumeDetails {
+  turn: number;
+  compacted: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -229,7 +239,7 @@ const InitParams = Type.Object({
     })
   ),
   direction: Type.Optional(
-    Type.String({
+    StringEnum(["lower", "higher"] as const, {
       description:
         'Whether "lower" or "higher" is better for the primary metric. Default: "lower".',
     })
@@ -260,11 +270,30 @@ export const LogParams = Type.Object({
     })
   ),
   asi: Type.Optional(
-    Type.Object({}, {
-      additionalProperties: Type.Unknown(),
-      description:
-        'Actionable Side Information — structured diagnostics for this run. Free-form key/value pairs. Parsed ASI from run_experiment output is merged automatically; use this to add or override fields.',
-    })
+    Type.Object(
+      {
+        hypothesis: Type.Optional(
+          Type.String({ description: "What hypothesis this experiment tested" })
+        ),
+        rollback_reason: Type.Optional(
+          Type.String({ description: "Why this run was discarded or crashed" })
+        ),
+        next_action_hint: Type.Optional(
+          Type.String({ description: "Best next step informed by this run" })
+        ),
+        revisits_run: Type.Optional(
+          Type.Integer({
+            minimum: 1,
+            description: "Earlier run number retried after its assumptions changed",
+          })
+        ),
+      },
+      {
+        additionalProperties: Type.Unknown(),
+        description:
+          'Actionable Side Information — structured diagnostics for this run. Free-form key/value pairs are allowed alongside the common fields.',
+      }
+    )
   ),
 });
 
@@ -465,6 +494,7 @@ function currentResults(results: ExperimentResult[], segment: number): Experimen
 
 interface AutoresearchConfig {
   maxIterations?: number;
+  compactEvery?: number;
   workingDir?: string;
 }
 
@@ -484,6 +514,14 @@ function readMaxExperiments(cwd: string): number | null {
   const config = readConfig(cwd);
   return (typeof config.maxIterations === "number" && config.maxIterations > 0)
     ? Math.floor(config.maxIterations)
+    : null;
+}
+
+/** Read optional periodic deterministic compaction cadence from config */
+function readCompactEvery(cwd: string): number | null {
+  const config = readConfig(cwd);
+  return (typeof config.compactEvery === "number" && config.compactEvery > 0)
+    ? Math.floor(config.compactEvery)
     : null;
 }
 
@@ -535,13 +573,15 @@ export function shouldAutoActivateAutoresearch(
   return samePath(ctxCwd, workDir);
 }
 
-function autoresearchActivationData(entry: CustomEntry): AutoresearchActivationEntryData | null {
+function autoresearchActivationData(
+  entry: CustomEntry,
+): (AutoresearchActivationEntryData & { workDir: string }) | null {
   if (entry.customType !== AUTORESEARCH_ACTIVATION_ENTRY) return null;
 
   const data = entry.data as AutoresearchActivationEntryData | undefined;
   if (typeof data?.workDir !== "string") return null;
 
-  return data;
+  return { ...data, workDir: data.workDir };
 }
 
 function recordedActivationDecision(ctx: ExtensionContext, workDir: string): boolean | null {
@@ -721,21 +761,21 @@ function createExperimentState(): ExperimentState {
     name: null,
     currentSegment: 0,
     maxExperiments: null,
+    compactEvery: null,
     confidence: null,
   };
 }
 
+/** Refresh config-driven limits from .auto/config.json so live edits take effect immediately. */
+function refreshConfigLimits(cwd: string, state: ExperimentState): void {
+  state.maxExperiments = readMaxExperiments(cwd);
+  state.compactEvery = readCompactEvery(cwd);
+}
+
 function createSessionRuntime(): AutoresearchRuntime {
   return {
-    autoresearchMode: false,
-    experimentsThisSession: 0,
-    autoResumeTurns: 0,
-    lastRunChecks: null,
-    lastRunDuration: null,
-    runningExperiment: null,
+    loop: createLoopState(),
     state: createExperimentState(),
-    pendingResumeTimer: null,
-    pendingResumeMessage: null,
   };
 }
 
@@ -1071,9 +1111,6 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   const BENCHMARK_GUARDRAIL =
     "Be careful not to overfit to the benchmarks and do not cheat on the benchmarks.";
 
-  // Outlasts pi's internal retry (setTimeout 0) and compaction-continue
-  // (setTimeout 100); see badlogic/pi-mono#2023, #2110.
-  const SETTLED_WINDOW_MS = 800;
   const shortcuts = resolveAutoresearchShortcuts();
 
   // The widget shows the first hint that fits its width, so a configured
@@ -1088,22 +1125,33 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   const getRuntime = (ctx: ExtensionContext): AutoresearchRuntime =>
     runtimeStore.ensure(getSessionKey(ctx));
 
-  // Registering through this gates the tool, so a new one can't slip in ungated.
+  // Registering through this gates the tool with defaultActive: false so it is
+  // never exposed until autoresearch mode is explicitly activated.
   const gatedToolNames = new Set<string>();
-  const registerGatedTool = (tool: Parameters<typeof pi.registerTool>[0]): void => {
+  const registerGatedTool = <TParams extends TSchema = TSchema, TDetails = unknown, TState = any>(
+    tool: ToolDefinition<TParams, TDetails, TState>,
+  ): void => {
     gatedToolNames.add(tool.name);
-    pi.registerTool(tool);
+    pi.registerTool({ ...tool, defaultActive: false });
   };
 
-  // The one place mode flips: gated tools follow the flag, never drifting from it.
-  const setAutoresearchMode = (ctx: ExtensionContext, enabled: boolean): void => {
-    getRuntime(ctx).autoresearchMode = enabled;
+  // Sync Pi's active tool loadout with the loop state machine's active flag.
+  const syncGatedTools = (enabled: boolean): void => {
     const activeTools = new Set(pi.getActiveTools()); // setActiveTools replaces the whole set
     for (const tool of gatedToolNames) {
       enabled ? activeTools.add(tool) : activeTools.delete(tool);
     }
     pi.setActiveTools([...activeTools]);
   };
+
+  const isAutoresearchActive = (runtime: AutoresearchRuntime): boolean =>
+    isLoopActive(runtime.loop);
+
+  const currentStopReason = (runtime: AutoresearchRuntime): string | null =>
+    autoResumeStopReasonFor({
+      autoResumeTurns: runtime.loop.autoResumeTurns,
+      state: runtime.state,
+    });
 
   const recordAutoresearchActivation = (workDir: string, active: boolean): void => {
     pi.appendEntry(AUTORESEARCH_ACTIVATION_ENTRY, {
@@ -1112,73 +1160,6 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       active,
     });
   };
-
-  const isAgentSettled = (ctx: ExtensionContext): boolean =>
-    ctx.isIdle() && !ctx.hasPendingMessages();
-
-  const hasPendingResume = (runtime: AutoresearchRuntime): boolean =>
-    runtime.pendingResumeMessage !== null;
-
-  const pausePendingResume = (runtime: AutoresearchRuntime): void => {
-    if (!runtime.pendingResumeTimer) return;
-    clearTimeout(runtime.pendingResumeTimer);
-    runtime.pendingResumeTimer = null;
-  };
-
-  const cancelPendingResume = (runtime: AutoresearchRuntime): void => {
-    pausePendingResume(runtime);
-    runtime.pendingResumeMessage = null;
-  };
-
-  const markAutoResumeSent = (runtime: AutoresearchRuntime): void => {
-    runtime.autoResumeTurns++;
-  };
-
-  const sendPendingResumeIfReady = (ctx: ExtensionContext, runtime: AutoresearchRuntime): void => {
-    const message = runtime.pendingResumeMessage;
-
-    if (!message) return;
-    if (!runtime.autoresearchMode) {
-      cancelPendingResume(runtime);
-      return;
-    }
-    if (!isAgentSettled(ctx)) return;
-    const stopReason = autoResumeStopReasonFor(runtime);
-    if (stopReason !== null) {
-      cancelPendingResume(runtime);
-      notifyAutoResumeLimitReached(ctx, stopReason);
-      return;
-    }
-
-    cancelPendingResume(runtime);
-    markAutoResumeSent(runtime);
-    pi.sendUserMessage(message);
-  };
-
-  const schedulePendingResume = (ctx: ExtensionContext, runtime: AutoresearchRuntime, message: string): void => {
-    pausePendingResume(runtime);
-    runtime.pendingResumeMessage = message;
-    runtime.pendingResumeTimer = setTimeout(
-      () => sendPendingResumeIfReady(ctx, runtime),
-      SETTLED_WINDOW_MS,
-    );
-  };
-
-  const reschedulePendingResume = (ctx: ExtensionContext, runtime: AutoresearchRuntime): void => {
-    if (!hasPendingResume(runtime)) return;
-    schedulePendingResume(ctx, runtime, runtime.pendingResumeMessage!);
-  };
-
-  const hasRunExperimentsThisSession = (runtime: AutoresearchRuntime): boolean =>
-    runtime.experimentsThisSession > 0;
-
-  // Why the experiment gate: a chat-only turn would otherwise loop forever,
-  // because every agent_end would re-prompt the agent, which would chat again.
-  const shouldAutoResumeAfterTurn = (runtime: AutoresearchRuntime): boolean =>
-    runtime.autoresearchMode && hasRunExperimentsThisSession(runtime);
-
-  const shouldAutoResumeAfterCompact = (runtime: AutoresearchRuntime): boolean =>
-    runtime.autoresearchMode;
 
   const notifyAutoResumeLimitReached = (ctx: ExtensionContext, reason?: string | null): void => {
     ctx.ui.notify(reason ?? `Autoresearch auto-resume limit reached`, "info");
@@ -1203,11 +1184,106 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     ].join(" ");
   };
 
+  const buildResumeCustomMessage = (
+    ctx: ExtensionContext,
+    turn: number,
+    compacted: boolean,
+  ): {
+    customType: string;
+    content: string;
+    display: boolean;
+    details: AutoresearchResumeDetails;
+  } => ({
+    customType: AUTORESEARCH_RESUME_MESSAGE,
+    content: compacted ? composeCompactionResumeMessage(ctx) : composeResumeMessage(ctx),
+    display: true,
+    details: { turn, compacted },
+  });
+
+  // Single state-machine dispatcher: updates runtime.loop, keeps gated tools
+  // in lockstep with active/inactive transitions, and executes non-boundary
+  // side effects while returning any boundary_continue effect to the caller.
+  const dispatchLoop = (
+    ctx: ExtensionContext,
+    event: LoopEvent,
+    options?: { forceSyncTools?: boolean },
+  ): Extract<LoopEffect, { type: "boundary_continue" }> | null => {
+    const runtime = getRuntime(ctx);
+    const wasActive = isLoopActive(runtime.loop);
+    const { state: nextLoop, effects } = transitionLoop(runtime.loop, event);
+    runtime.loop = nextLoop;
+
+    const nowActive = isLoopActive(nextLoop);
+    if (options?.forceSyncTools || wasActive !== nowActive) {
+      syncGatedTools(nowActive);
+    }
+
+    let boundaryContinue: Extract<LoopEffect, { type: "boundary_continue" }> | null = null;
+    for (const effect of effects) {
+      switch (effect.type) {
+        case "abort":
+          ctx.abort();
+          break;
+        case "notify_stop":
+          notifyAutoResumeLimitReached(ctx, effect.reason);
+          break;
+        case "send_resume_message":
+          pi.sendMessage(
+            buildResumeCustomMessage(ctx, effect.turn, effect.compacted),
+            { triggerTurn: true },
+          );
+          break;
+        case "boundary_continue":
+          boundaryContinue = effect;
+          break;
+      }
+    }
+    return boundaryContinue;
+  };
+
+  const buildBoundaryContinuation = (
+    ctx: ExtensionContext,
+    existingEntries: readonly SessionBoundaryDraft[],
+    effect: Extract<LoopEffect, { type: "boundary_continue" }>,
+  ): { entries: SessionBoundaryDraft[]; continue: true } => {
+    const entries: SessionBoundaryDraft[] = [...existingEntries];
+    if (effect.compact) {
+      entries.push({
+        type: "compaction",
+        summary: buildAutoresearchCompactionSummary(
+          autoresearchSummaryPathsFor(resolveWorkDir(ctx.cwd)),
+        ),
+        firstKeptEntryId: null,
+      });
+    }
+    entries.push({
+      type: "custom_message",
+      ...buildResumeCustomMessage(ctx, effect.turn, effect.compacted),
+    });
+    return { entries, continue: true };
+  };
+
+  pi.registerMessageRenderer?.<AutoresearchResumeDetails>(
+    AUTORESEARCH_RESUME_MESSAGE,
+    (message, { expanded }, theme) => {
+      const turn = message.details?.turn;
+      const compacted = message.details?.compacted === true;
+      const label = compacted
+        ? `↻ Autoresearch continuing after compaction${turn ? ` (turn ${turn})` : ""}`
+        : `↻ Autoresearch continuing${turn ? ` (turn ${turn})` : ""}`;
+      const body = typeof message.content === "string" ? message.content : "";
+      const text = expanded && body
+        ? `${theme.fg("accent", label)}\n${theme.fg("dim", body)}`
+        : theme.fg("dim", label);
+      return new Text(text, 0, 0);
+    },
+  );
+
   const autoresearchCompactionFor = (
     ctx: ExtensionContext,
     event: SessionBeforeCompactEvent,
   ) => {
-    if (!getRuntime(ctx).autoresearchMode) return undefined;
+    if (!isAutoresearchActive(getRuntime(ctx))) return undefined;
     return {
       compaction: {
         summary: buildAutoresearchCompactionSummary(
@@ -1299,12 +1375,6 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
   const reconstructState = (ctx: ExtensionContext) => {
     const runtime = getRuntime(ctx);
-    cancelPendingResume(runtime);
-    runtime.lastRunChecks = null;
-    runtime.lastRunDuration = null;
-    runtime.runningExperiment = null;
-    runtime.experimentsThisSession = 0;
-    runtime.autoResumeTurns = 0;
     runtime.state = createExperimentState();
 
     let state = runtime.state;
@@ -1367,22 +1437,20 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     }
 
 
-    // Read max experiments from config file
-    state.maxExperiments = readMaxExperiments(ctx.cwd);
+    // Read max experiments and optional compaction cadence from config file
+    refreshConfigLimits(ctx.cwd, state);
 
     // Auto-enter autoresearch mode only when a persisted experiment log exists.
     // A recorded `/autoresearch on|off` in this session wins; otherwise same-cwd
     // sessions default on and redirected workingDir sessions default off, so
     // unrelated chats launched from a shared cwd never activate it.
-    setAutoresearchMode(
-      ctx,
-      shouldAutoActivateAutoresearch(
-        ctx.cwd,
-        workDir,
-        hasPersistedLog,
-        recordedActivationDecision(ctx, workDir),
-      ),
+    const shouldActivate = shouldAutoActivateAutoresearch(
+      ctx.cwd,
+      workDir,
+      hasPersistedLog,
+      recordedActivationDecision(ctx, workDir),
     );
+    dispatchLoop(ctx, { type: "session_restored", active: shouldActivate }, { forceSyncTools: true });
 
     updateWidget(ctx);
   };
@@ -1393,13 +1461,13 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     const runtime = getRuntime(ctx);
     const state = runtime.state;
 
-    if (!runtime.autoresearchMode) {
+    if (!isAutoresearchActive(runtime)) {
       ctx.ui.setWidget("autoresearch", undefined);
       return;
     }
 
     if (state.results.length === 0) {
-      if (!runtime.runningExperiment) {
+      if (!runtime.loop.runningExperiment) {
         ctx.ui.setWidget("autoresearch", undefined);
         return;
       }
@@ -1412,7 +1480,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
               theme.fg("accent", "🔬"),
               theme.fg("warning", " running…"),
               state.name ? theme.fg("dim", ` │ ${state.name}`) : "",
-              theme.fg("dim", ` │ ${runtime.runningExperiment?.command ?? ""}`),
+              theme.fg("dim", ` │ ${runtime.loop.runningExperiment?.command ?? ""}`),
               theme.fg("dim", " │ waiting for first logged result"),
             ],
             safeWidth
@@ -1464,57 +1532,82 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   });
   pi.on("session_shutdown", async (_e, ctx) => {
     clearSessionUi(ctx);
-    cancelPendingResume(getRuntime(ctx));
     runtimeStore.clear(getSessionKey(ctx));
     stopDashboardServer();
   });
 
   pi.on("agent_start", async (_event, ctx) => {
-    const runtime = getRuntime(ctx);
-    runtime.experimentsThisSession = 0;
-    pausePendingResume(runtime);
+    dispatchLoop(ctx, { type: "agent_start" });
   });
 
-  const ensurePendingResume = (
-    ctx: ExtensionContext,
-    gate: (runtime: AutoresearchRuntime) => boolean,
-    composeMessage: (ctx: ExtensionContext) => string = composeResumeMessage,
-  ): void => {
-    const runtime = getRuntime(ctx);
-    if (hasPendingResume(runtime)) {
-      reschedulePendingResume(ctx, runtime);
-      return;
-    }
-    if (!gate(runtime)) return;
-    const stopReason = autoResumeStopReasonFor(runtime);
-    if (stopReason !== null) {
-      notifyAutoResumeLimitReached(ctx, stopReason);
-      return;
-    }
-    schedulePendingResume(ctx, runtime, composeMessage(ctx));
-  };
-
   pi.on("session_before_compact", async (event, ctx) => {
-    pausePendingResume(getRuntime(ctx));
     return autoresearchCompactionFor(ctx, event);
   });
 
-  pi.on("session_compact", async (_event, ctx) => {
-    ensurePendingResume(ctx, shouldAutoResumeAfterCompact, composeCompactionResumeMessage);
+  pi.on("session_compact", async (event, ctx) => {
+    const runtime = getRuntime(ctx);
+    dispatchLoop(ctx, {
+      type: "session_compact",
+      reason: event.reason,
+      willRetry: event.willRetry,
+      isIdle: ctx.isIdle(),
+      stopReason: currentStopReason(runtime),
+    });
+  });
+
+  pi.on("session_compact_failed", async (_event, ctx) => {
+    dispatchLoop(ctx, { type: "session_compact_failed" });
+  });
+
+  pi.on("turn_end", async (event, ctx) => {
+    const runtime = getRuntime(ctx);
+    refreshConfigLimits(ctx.cwd, runtime.state);
+    const cont = dispatchLoop(ctx, {
+      type: "turn_end",
+      outcome: event.outcome,
+      compactEvery: runtime.state.compactEvery,
+      stopReason: currentStopReason(runtime),
+    });
+    return cont ? buildBoundaryContinuation(ctx, event.entries, cont) : undefined;
   });
 
   pi.on("agent_end", async (_event, ctx) => {
-    const runtime = getRuntime(ctx);
-    runtime.runningExperiment = null;
+    dispatchLoop(ctx, { type: "agent_end" });
     if (overlayTui) overlayTui.requestRender();
-    ensurePendingResume(ctx, shouldAutoResumeAfterTurn);
   });
 
-  // When in autoresearch mode, add a static note to the system prompt.
-  // Only a short pointer — no file content, fully cache-safe.
+  // Final actionable boundary: fires only after Pi has finished retries,
+  // auto-compaction, and queued user follow-ups.
+  pi.on("agent_before_settle", async (event, ctx) => {
+    const runtime = getRuntime(ctx);
+    refreshConfigLimits(ctx.cwd, runtime.state);
+    const cont = dispatchLoop(ctx, {
+      type: "agent_before_settle",
+      outcome: event.outcome,
+      compactEvery: runtime.state.compactEvery,
+      stopReason: currentStopReason(runtime),
+    });
+    return cont ? buildBoundaryContinuation(ctx, event.entries, cont) : undefined;
+  });
+
+  pi.on("agent_settled", async (event, ctx) => {
+    dispatchLoop(ctx, { type: "agent_settled", aborted: event.aborted });
+    if (overlayTui) overlayTui.requestRender();
+  });
+
+  // When in autoresearch mode, attach a structured prompt section instead of
+  // forcing a full systemPrompt override — Pi diffs sections mid-conversation
+  // so toggling checks/ideas or autoresearch mode preserves the prompt cache.
   pi.on("before_agent_start", async (event, ctx) => {
     const runtime = getRuntime(ctx);
-    if (!runtime.autoresearchMode) return;
+    const sections = event.systemPromptOptions?.sections;
+
+    if (!isAutoresearchActive(runtime)) {
+      if (sections) delete sections.autoresearch;
+      return;
+    }
+
+    refreshConfigLimits(ctx.cwd, runtime.state);
 
     const workDir = resolveWorkDir(ctx.cwd);
     const mdPath = autoresearchMdPath(workDir);
@@ -1525,7 +1618,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     const hasChecks = fs.existsSync(checksPath);
 
     let extra =
-      "\n\n## Autoresearch Mode (ACTIVE)" +
+      "## Autoresearch Mode (ACTIVE)" +
       "\nYou are in autoresearch mode. Optimize the primary metric through an autonomous experiment loop." +
       "\nUse init_experiment, run_experiment, and log_experiment tools. NEVER STOP until interrupted." +
       `\nExperiment rules: ${mdPath} — read this file at the start of every session and after compaction.` +
@@ -1547,8 +1640,13 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       extra += `\n\n💡 Ideas backlog exists at ${ideasPath} — check it for promising experiment paths. Prune stale entries.`;
     }
 
+    if (sections) {
+      sections.autoresearch = extra;
+      return;
+    }
+
     return {
-      systemPrompt: event.systemPrompt + extra,
+      systemPrompt: event.systemPrompt + "\n\n" + extra,
     };
   });
 
@@ -1568,6 +1666,12 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       "If the session log (.auto/log.jsonl) already exists with a config, do NOT call init_experiment again.",
       "If the optimization target changes (different benchmark, metric, or workload), call init_experiment again to insert a new config header and reset the baseline.",
     ],
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
     parameters: InitParams,
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -1600,8 +1704,11 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       state.secondaryMetrics = [];
       state.confidence = null;
 
-      // Read max experiments from config file (config always in ctx.cwd)
-      state.maxExperiments = readMaxExperiments(ctx.cwd);
+      // Read config limits from config file (config always in ctx.cwd)
+      refreshConfigLimits(ctx.cwd, state);
+      if (isReinit) {
+        dispatchLoop(ctx, { type: "segment_reset" });
+      }
 
       // Write config header to jsonl (append for re-init, create for first)
       const workDir = resolveWorkDir(ctx.cwd);
@@ -1631,9 +1738,9 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         };
       }
 
-      const wasInactive = !runtime.autoresearchMode;
+      const wasInactive = !isAutoresearchActive(runtime);
       recordAutoresearchActivation(workDir, true);
-      setAutoresearchMode(ctx, true);
+      dispatchLoop(ctx, { type: "activate", inActiveRun: true }, { forceSyncTools: true });
       updateWidget(ctx);
 
       if (wasInactive) {
@@ -1659,15 +1766,19 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       };
     },
 
-    renderCall(args, theme) {
+    renderCall(args, theme, context) {
       let text = theme.fg("toolTitle", theme.bold("init_experiment "));
       text += theme.fg("accent", args.name ?? "");
-      return new Text(text, 0, 0);
+      const comp = (context?.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+      comp.setText(text);
+      return comp;
     },
 
-    renderResult(result, _options, theme) {
+    renderResult(result, _options, _theme, context) {
       const t = result.content[0];
-      return new Text(t?.type === "text" ? t.text : "", 0, 0);
+      const comp = (context?.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+      comp.setText(t?.type === "text" ? t.text : "");
+      return comp;
     },
   });
 
@@ -1688,6 +1799,12 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       "If the benchmark script outputs structured METRIC lines (e.g. 'METRIC total_µs=15200'), run_experiment will parse them automatically and suggest exact values for log_experiment. Use these parsed values directly instead of extracting them manually from the output.",
 
     ],
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
     parameters: RunParams,
 
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
@@ -1703,6 +1820,8 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         };
       }
       const workDir = resolveWorkDir(ctx.cwd);
+
+      refreshConfigLimits(ctx.cwd, state);
 
       // Block if max experiments limit already reached
       if (state.maxExperiments !== null) {
@@ -1742,8 +1861,11 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         };
       }
 
-      // TODO(/tree): replace compaction-based resume with a checkpoint-per-iteration model.
-      runtime.runningExperiment = { startedAt: Date.now(), command: params.command };
+      dispatchLoop(ctx, {
+        type: "experiment_started",
+        startedAt: Date.now(),
+        command: params.command,
+      });
       updateWidget(ctx);
       if (overlayTui) overlayTui.requestRender();
 
@@ -1908,13 +2030,12 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
           });
         });
       }).finally(() => {
-        runtime.runningExperiment = null;
+        dispatchLoop(ctx, { type: "experiment_aborted" });
         updateWidget(ctx);
         if (overlayTui) overlayTui.requestRender();
       });
 
       const durationSeconds = (Date.now() - t0) / 1000;
-      runtime.lastRunDuration = durationSeconds;
       const benchmarkPassed = exitCode === 0 && !timedOut;
 
       // Run backpressure checks if benchmark passed and checks file exists
@@ -1944,8 +2065,12 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         }
       }
 
-      // Store checks result for log_experiment gate
-      runtime.lastRunChecks = checksPass !== null ? { pass: checksPass, output: checksOutput, duration: checksDuration } : null;
+      // Store run timing & checks result for log_experiment gate
+      dispatchLoop(ctx, {
+        type: "experiment_finished",
+        durationSeconds,
+        checks: checksPass !== null ? { pass: checksPass, output: checksOutput, duration: checksDuration } : null,
+      });
 
       const passed = benchmarkPassed && (checksPass === null || checksPass);
 
@@ -2063,17 +2188,24 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       };
     },
 
-    renderCall(args, theme) {
+    renderCall(args, theme, context) {
       let text = theme.fg("toolTitle", theme.bold("run_experiment "));
       text += theme.fg("muted", args.command);
       if (args.timeout_seconds) {
         text += theme.fg("dim", ` (timeout: ${args.timeout_seconds}s)`);
       }
-      return new Text(text, 0, 0);
+      const comp = (context?.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+      comp.setText(text);
+      return comp;
     },
 
-    renderResult(result, { expanded, isPartial }, theme) {
+    renderResult(result, { expanded, isPartial }, theme, context) {
       const PREVIEW_LINES = 5;
+      const toText = (content: string) => {
+        const comp = (context?.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+        comp.setText(content);
+        return comp;
+      };
 
       if (isPartial) {
         // Streaming: show elapsed timer + tail of output
@@ -2093,13 +2225,13 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
           }
         }
 
-        return new Text(text, 0, 0);
+        return toText(text);
       }
 
       const d = result.details as (RunDetails & { truncation?: any; fullOutputPath?: string }) | undefined;
       if (!d) {
         const t = result.content[0];
-        return new Text(t?.type === "text" ? t.text : "", 0, 0);
+        return toText(t?.type === "text" ? t.text : "");
       }
 
       // Helper: append tail output preview or full output
@@ -2113,7 +2245,8 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
           if (tail.trim()) {
             const hidden = lines.length - PREVIEW_LINES;
             if (hidden > 0) {
-              text += "\n" + theme.fg("muted", `… ${hidden} more lines`);
+              const expandHint = context?.keyHint ? ` (${context.keyHint("app.tools.expand", "to expand")})` : "";
+              text += "\n" + theme.fg("muted", `… ${hidden} more lines`) + expandHint;
             }
             text += "\n" + theme.fg("dim", tail);
           }
@@ -2124,7 +2257,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       if (d.timedOut) {
         let text = theme.fg("error", `⏰ TIMEOUT ${d.durationSeconds.toFixed(1)}s`);
         text = appendOutput(text, d.tailOutput);
-        return new Text(text, 0, 0);
+        return toText(text);
       }
 
       // Helper: format parsed primary metric suffix (empty string if not available)
@@ -2138,7 +2271,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
           parsedSuffix +
           theme.fg("error", ` ⏰ checks timeout ${d.checksDuration.toFixed(1)}s`);
         text = appendOutput(text, d.checksOutput);
-        return new Text(text, 0, 0);
+        return toText(text);
       }
 
       if (d.checksPass === false) {
@@ -2147,13 +2280,13 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
           parsedSuffix +
           theme.fg("error", ` 💥 checks failed ${d.checksDuration.toFixed(1)}s`);
         text = appendOutput(text, d.checksOutput);
-        return new Text(text, 0, 0);
+        return toText(text);
       }
 
       if (d.crashed) {
         let text = theme.fg("error", `💥 FAIL exit=${d.exitCode} ${d.durationSeconds.toFixed(1)}s`) + parsedSuffix;
         text = appendOutput(text, d.tailOutput);
-        return new Text(text, 0, 0);
+        return toText(text);
       }
 
       let text = theme.fg("success", "✅ ");
@@ -2183,7 +2316,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         }
       }
 
-      return new Text(text, 0, 0);
+      return toText(text);
     },
   });
 
@@ -2207,6 +2340,12 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       "Always include the asi parameter. At minimum: {\"hypothesis\": \"what you tried\"}. On discard/crash, also include rollback_reason and next_action_hint. Add any other key/value pairs that capture what you learned — dead ends, surprising findings, error details, bottlenecks. This is the only structured memory that survives reverts.",
       "When log_experiment records a retry of a previously discarded idea after its assumptions changed, set asi.revisits_run to the earlier run number (a positive integer) and explain what changed in description. Omit revisits_run for new ideas and verification reruns.",
     ],
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
     parameters: LogParams,
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -2222,14 +2361,16 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         };
       }
       const workDir = resolveWorkDir(ctx.cwd);
-      const secondaryMetrics = params.metrics ?? {};
+      refreshConfigLimits(ctx.cwd, state);
+      const secondaryMetrics = (params.metrics ?? {}) as Record<string, number>;
+      const status = params.status as ExperimentResult["status"];
 
       // Gate: prevent "keep" when last run's checks failed
-      if (params.status === "keep" && runtime.lastRunChecks && !runtime.lastRunChecks.pass) {
+      if (status === "keep" && runtime.loop.lastRunChecks && !runtime.loop.lastRunChecks.pass) {
         return {
           content: [{
             type: "text",
-            text: `❌ Cannot keep — .auto/checks.sh failed.\n\n${runtime.lastRunChecks.output.slice(-500)}\n\nLog as 'checks_failed' instead. The benchmark metric is valid but correctness checks did not pass.`,
+            text: `❌ Cannot keep — .auto/checks.sh failed.\n\n${runtime.loop.lastRunChecks.output.slice(-500)}\n\nLog as 'checks_failed' instead. The benchmark metric is valid but correctness checks did not pass.`,
           }],
           details: {},
         };
@@ -2274,7 +2415,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         commit: params.commit.slice(0, 7),
         metric: params.metric,
         metrics: secondaryMetrics,
-        status: params.status,
+        status,
         description: params.description,
         timestamp: Date.now(),
         segment: state.currentSegment,
@@ -2283,7 +2424,6 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       };
 
       state.results.push(experiment);
-      runtime.experimentsThisSession++;
 
       // Register any new secondary metric names
       for (const name of Object.keys(secondaryMetrics)) {
@@ -2452,27 +2592,25 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       });
       if (afterSteer) pi.sendUserMessage(afterSteer, { deliverAs: "steer" });
 
-      const wallClockSeconds = runtime.lastRunDuration;
-      runtime.runningExperiment = null;
-      runtime.lastRunChecks = null;
-      runtime.lastRunDuration = null;
-
+      const wallClockSeconds = runtime.loop.lastRunDuration;
       const limitReached = state.maxExperiments !== null && segmentCount >= state.maxExperiments;
       if (limitReached) {
         text += `\n\n🛑 Maximum experiments reached (${state.maxExperiments}). STOP the experiment loop now.`;
         recordAutoresearchActivation(workDir, false);
-        setAutoresearchMode(ctx, false);
-        ctx.abort();
-      } else if (runtime.autoresearchMode) {
-        text += "\n\nBefore choosing the next experiment, consider whether this result or discovery invalidates a previous discard's rollback reason. If so, name what changed and weigh a targeted retry against other candidates. Otherwise, move on. Don't revive a discarded idea without a changed assumption. Verification reruns to resolve measurement noise are separate.";
-        const beforeSteer = await fireHook({
-          event: "before",
-          cwd: workDir,
-          next_run: state.results.length + 1,
-          last_run: jsonlEntry,
-          session: buildSessionSnapshot(state),
-        });
-        if (beforeSteer) pi.sendUserMessage(beforeSteer, { deliverAs: "steer" });
+        dispatchLoop(ctx, { type: "experiment_logged", limitReached: true });
+      } else {
+        dispatchLoop(ctx, { type: "experiment_logged", limitReached: false });
+        if (isAutoresearchActive(runtime)) {
+          text += "\n\nBefore choosing the next experiment, consider whether this result or discovery invalidates a previous discard's rollback reason. If so, name what changed and weigh a targeted retry against other candidates. Otherwise, move on. Don't revive a discarded idea without a changed assumption. Verification reruns to resolve measurement noise are separate.";
+          const beforeSteer = await fireHook({
+            event: "before",
+            cwd: workDir,
+            next_run: state.results.length + 1,
+            last_run: jsonlEntry,
+            session: buildSessionSnapshot(state),
+          });
+          if (beforeSteer) pi.sendUserMessage(beforeSteer, { deliverAs: "steer" });
+        }
       }
 
       updateWidget(ctx);
@@ -2490,7 +2628,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       };
     },
 
-    renderCall(args, theme) {
+    renderCall(args, theme, context) {
       let text = theme.fg("toolTitle", theme.bold("log_experiment "));
       const color =
         args.status === "keep"
@@ -2498,16 +2636,24 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
           : args.status === "crash" || args.status === "checks_failed"
             ? "error"
             : "warning";
-      text += theme.fg(color, args.status);
+      const status = String(args.status ?? "");
+      text += theme.fg(color, status);
       text += " " + theme.fg("dim", args.description);
-      return new Text(text, 0, 0);
+      const comp = (context?.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+      comp.setText(text);
+      return comp;
     },
 
-    renderResult(result, _options, theme) {
+    renderResult(result, _options, theme, context) {
+      const toText = (content: string) => {
+        const comp = (context?.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+        comp.setText(content);
+        return comp;
+      };
       const d = result.details as LogDetails | undefined;
       if (!d) {
         const t = result.content[0];
-        return new Text(t?.type === "text" ? t.text : "", 0, 0);
+        return toText(t?.type === "text" ? t.text : "");
       }
 
       const { experiment: exp, state: s } = d;
@@ -2567,7 +2713,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         text += "\n" + theme.fg("accent", `↻ Revisiting #${revisitsRun}`);
       }
 
-      return new Text(text, 0, 0);
+      return toText(text);
     },
   });
 
@@ -2576,8 +2722,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   // -----------------------------------------------------------------------
 
   function canOpenFullscreenDashboard(ctx: ExtensionContext): boolean {
-    const mode = (ctx as ExtensionContext & { mode?: string }).mode;
-    return mode === undefined ? ctx.hasUI : mode === "tui";
+    return ctx.mode === "tui";
   }
 
   async function openFullscreenDashboard(ctx: ExtensionContext): Promise<void> {
@@ -2588,7 +2733,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
     const runtime = getRuntime(ctx);
     const state = runtime.state;
-    if (!runtime.autoresearchMode) {
+    if (!isAutoresearchActive(runtime)) {
       ctx.ui.notify("Autoresearch mode is not active", "info");
       return;
     }
@@ -2598,7 +2743,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     }
 
     await ctx.ui.custom<void>(
-      (tui, theme, _kb, done) => {
+      (tui, theme, kb, done) => {
       let scrollOffset = 0;
       let lastViewportRows = 8;
       let lastTotalRows = 0;
@@ -2606,13 +2751,13 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
       spinnerInterval = setInterval(() => {
         spinnerFrame = (spinnerFrame + 1) % SPINNER.length;
-        if (runtime.runningExperiment) tui.requestRender();
+        if (runtime.loop.runningExperiment) tui.requestRender();
       }, 80);
 
       const buildOverlayContent = (renderWidth: number): string[] => {
         const content = renderDashboardLines(state, renderWidth, theme, 0);
-        if (runtime.runningExperiment) {
-          const elapsed = formatElapsed(Date.now() - runtime.runningExperiment.startedAt);
+        if (runtime.loop.runningExperiment) {
+          const elapsed = formatElapsed(Date.now() - runtime.loop.runningExperiment.startedAt);
           const frame = SPINNER[spinnerFrame % SPINNER.length];
           const nextIdx = state.results.length + 1;
           content.push(
@@ -2690,17 +2835,17 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         handleInput(data: string): void {
           const maxScroll = Math.max(0, lastTotalRows - lastViewportRows);
 
-          if (matchesKey(data, "escape") || data === "q") {
+          if ((kb ? kb.matches(data, "tui.select.cancel") : matchesKey(data, "escape")) || data === "q") {
             done(undefined);
             return;
           }
-          if (matchesKey(data, "up") || data === "k") {
+          if ((kb ? kb.matches(data, "tui.select.up") : matchesKey(data, "up")) || data === "k") {
             scrollOffset = Math.max(0, scrollOffset - 1);
-          } else if (matchesKey(data, "down") || data === "j") {
+          } else if ((kb ? kb.matches(data, "tui.select.down") : matchesKey(data, "down")) || data === "j") {
             scrollOffset = Math.min(maxScroll, scrollOffset + 1);
-          } else if (matchesKey(data, "pageUp") || data === "u") {
+          } else if ((kb ? kb.matches(data, "tui.select.pageUp") : matchesKey(data, "pageUp")) || data === "u") {
             scrollOffset = Math.max(0, scrollOffset - lastViewportRows);
-          } else if (matchesKey(data, "pageDown") || data === "d") {
+          } else if ((kb ? kb.matches(data, "tui.select.pageDown") : matchesKey(data, "pageDown")) || data === "d") {
             scrollOffset = Math.min(maxScroll, scrollOffset + lastViewportRows);
           } else if (data === "g") {
             scrollOffset = 0;
@@ -2811,7 +2956,13 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   let dashboardServerPort: number | null = null;
   let dashboardServerWorkDir: string | null = null;
   let dashboardServerHtmlPath: string | null = null;
+  let dashboardExportDir: string | null = null;
   const dashboardSseClients = new Set<ServerResponse>();
+
+  function cleanupDashboardExportDir(dir: string | null): void {
+    if (!dir) return;
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
 
   function openInBrowser(url: string): void {
     const child = process.platform === "win32"
@@ -2840,21 +2991,23 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       try { dashboardServer.close(); } catch { /* ignore */ }
     }
 
+    cleanupDashboardExportDir(dashboardExportDir);
     dashboardServer = null;
     dashboardServerPort = null;
     dashboardServerWorkDir = null;
     dashboardServerHtmlPath = null;
+    dashboardExportDir = null;
   }
 
-  function writeDashboardFile(workDir: string): string {
+  function writeDashboardFile(workDir: string): { exportDir: string; htmlPath: string } {
     const jsonlContent = readJsonlContent(workDir);
     const sessionName = extractAutoresearchSessionName(jsonlContent);
     const html = injectDataIntoTemplate(readTemplate(), sessionName)
       .replace(LOGO_PLACEHOLDER, logoDataUrl());
     const exportDir = fs.mkdtempSync(path.join(tmpdir(), "pi-autoresearch-dashboard-"));
-    const dest = path.join(exportDir, "index.html");
-    fs.writeFileSync(dest, html);
-    return dest;
+    const htmlPath = path.join(exportDir, "index.html");
+    fs.writeFileSync(htmlPath, html);
+    return { exportDir, htmlPath };
   }
 
   const CONTENT_TYPES: Record<string, string> = {
@@ -2901,18 +3054,25 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     }
   }
 
-  function startStaticServer(workDir: string, dashboardHtmlPath: string): Promise<number> {
+  function startStaticServer(
+    workDir: string,
+    dashboardHtmlPath: string,
+    exportDir: string,
+  ): Promise<number> {
     return new Promise((resolve, reject) => {
       const resolvedWorkDir = path.resolve(workDir);
       const resolvedDashboardHtmlPath = path.resolve(dashboardHtmlPath);
 
       if (dashboardServer && dashboardServerWorkDir === resolvedWorkDir && dashboardServerPort) {
+        cleanupDashboardExportDir(dashboardExportDir);
+        dashboardExportDir = exportDir;
         dashboardServerHtmlPath = resolvedDashboardHtmlPath;
         resolve(dashboardServerPort);
         return;
       }
 
       stopDashboardServer();
+      dashboardExportDir = exportDir;
       dashboardServerHtmlPath = resolvedDashboardHtmlPath;
 
       const server = createServer((req, res) => {
@@ -2967,8 +3127,8 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     }
 
     try {
-      const dashboardHtmlPath = writeDashboardFile(workDir);
-      const port = await startStaticServer(workDir, dashboardHtmlPath);
+      const { exportDir, htmlPath } = writeDashboardFile(workDir);
+      const port = await startStaticServer(workDir, htmlPath, exportDir);
       const url = `http://127.0.0.1:${port}`;
       openInBrowser(url);
       ctx.ui.notify(`Dashboard at ${url} (live updates)`, "info");
@@ -2985,18 +3145,10 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   // -----------------------------------------------------------------------
 
   function stopAutoresearchLoop(ctx: ExtensionContext): void {
-    const runtime = getRuntime(ctx);
     recordAutoresearchActivation(resolveWorkDir(ctx.cwd), false);
-    setAutoresearchMode(ctx, false);
-    runtime.autoResumeTurns = 0;
-    runtime.experimentsThisSession = 0;
-    runtime.lastRunChecks = null;
-    runtime.lastRunDuration = null;
-    runtime.runningExperiment = null;
-    cancelPendingResume(runtime);
+    dispatchLoop(ctx, { type: "deactivate", inActiveRun: !ctx.isIdle() }, { forceSyncTools: true });
     stopDashboardServer();
     clearSessionUi(ctx);
-    if (!ctx.isIdle()) ctx.abort();
   }
 
   function turnAutoresearchOff(ctx: ExtensionContext): void {
@@ -3015,7 +3167,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       ctx.ui.notify("No logged experiments to finalize — use '/autoresearch <goal>' to start a session", "error");
       return;
     }
-    if (getRuntime(ctx).autoresearchMode) await turnOffAndSettle(ctx);
+    if (isAutoresearchActive(getRuntime(ctx))) await turnOffAndSettle(ctx);
     ctx.ui.notify("Loading autoresearch-finalize skill", "info");
     sendWhenReady(ctx, FINALIZE_KICKOFF);
   }
@@ -3064,13 +3216,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         const workDir = resolveWorkDir(ctx.cwd);
         const jsonlPaths = sessionFileCandidates(workDir, "log");
         recordAutoresearchActivation(workDir, false);
-        setAutoresearchMode(ctx, false);
-        runtime.autoResumeTurns = 0;
-        runtime.experimentsThisSession = 0;
-        runtime.lastRunChecks = null;
-        runtime.lastRunDuration = null;
-        runtime.runningExperiment = null;
-        cancelPendingResume(runtime);
+        dispatchLoop(ctx, { type: "deactivate", inActiveRun: !ctx.isIdle() }, { forceSyncTools: true });
         runtime.state = createExperimentState();
         stopDashboardServer();
         updateWidget(ctx);
@@ -3098,15 +3244,14 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         return;
       }
 
-      if (runtime.autoresearchMode) {
+      if (isAutoresearchActive(runtime)) {
         ctx.ui.notify("Autoresearch already active — use '/autoresearch off' to stop first", "info");
         return;
       }
 
       const workDir = resolveWorkDir(ctx.cwd);
       recordAutoresearchActivation(workDir, true);
-      setAutoresearchMode(ctx, true);
-      runtime.autoResumeTurns = 0;
+      dispatchLoop(ctx, { type: "activate", resetTurns: true }, { forceSyncTools: true });
       const rulesLoaded = hasAutoresearchRules(ctx);
       // No .auto/prompt.md yet — load the create skill so the agent follows the
       // setup guidelines. `/skill:<name>` is expanded to the full SKILL.md when

@@ -266,10 +266,11 @@ Create `.auto/config.json` in your pi session directory to customize behavior:
 |-------|------|-------------|
 | `workingDir` | string | Override the directory for all autoresearch operations — file I/O, command execution, and git. Supports absolute or relative paths (resolved against the pi session cwd). The config file itself always stays under the session cwd. Fails if the directory doesn't exist. |
 | `maxIterations` | number | Maximum experiments before auto-stopping. The agent is told to stop and won't run more experiments until a new segment is initialized. |
+| `compactEvery` | number | Optional periodic deterministic compaction cadence: every N logged experiments, emit a lossless persisted-state compaction boundary (`firstKeptEntryId: null`) so each window starts with fresh context. Omit to keep prompt-cache continuity and compact only at pi's normal context threshold. |
 
 ### Long-running loops and context
 
-The loop is designed to run unattended across context limits. When pi's [auto-compaction](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/compaction.md) summarizes the older portion of the conversation, autoresearch detects the resulting idle and re-prompts the agent to re-read `.auto/prompt.md`, the tail of `.auto/log.jsonl`, `.auto/ideas.md`, and `git log` before continuing. All progress is persisted in those files, so the post-summary turn rehydrates from the source of truth instead of relying on whatever survived compaction. No tuning required — if pi's auto-compaction is enabled (the default), this just works.
+The loop is designed to run unattended across context limits. When pi compacts the conversation (or when optional `compactEvery` triggers a periodic reset), autoresearch replaces the LLM compaction call with a deterministic summary built directly from `.auto/prompt.md`, `.auto/ideas.md`, and the tail of `.auto/log.jsonl`, then continues cleanly via pi's `agent_before_settle` boundary. All progress is persisted in those files, so the post-summary turn rehydrates from the source of truth instead of relying on whatever survived compaction. No tuning required — if pi's auto-compaction is enabled (the default), this just works.
 
 ---
 

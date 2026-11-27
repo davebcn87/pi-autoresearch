@@ -51,12 +51,12 @@
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*",
-    "@sinclair/typebox": "*"
+    "typebox": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "^0.74.0",
-    "@earendil-works/pi-coding-agent": "^0.74.0",
-    "@earendil-works/pi-tui": "^0.74.0",
-    "@sinclair/typebox": "^0.34.41"
+    "@earendil-works/pi-ai": "^1.7.0",
+    "@earendil-works/pi-coding-agent": "^1.7.0",
+    "@earendil-works/pi-tui": "^1.7.0",
+    "typebox": "^1.4.0"
   }
 }
