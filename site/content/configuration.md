@@ -133,7 +133,7 @@ Executable scripts under `.auto/hooks/` can observe or influence iteration bound
 ### Lifecycle
 
 - **`.auto/hooks/before.sh`** runs on fresh activation, then again after each logged experiment. Use it to fetch research, rotate ideas, or prepare context for the next attempt.
-- **`.auto/hooks/after.sh`** runs after `log_experiment`. Use it to persist learnings, tag wins, or send local notifications.
+- **`.auto/hooks/after.sh`** runs after each logged `run_experiment`. Use it to persist learnings, tag wins, or send local notifications.
 
 ### Contract
 

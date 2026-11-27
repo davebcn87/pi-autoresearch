@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { LogParams } from "../extensions/pi-autoresearch/index.ts";
+import { RunParams } from "../extensions/pi-autoresearch/index.ts";
 
 function collectKeyPaths(value, targetKey, path = "$", hits = []) {
   if (Array.isArray(value)) {
@@ -24,19 +24,19 @@ function collectKeyPaths(value, targetKey, path = "$", hits = []) {
   return hits;
 }
 
-test("log_experiment schema should avoid patternProperties for Cloud Code Assist compatibility", () => {
-  const patternPropertyPaths = collectKeyPaths(LogParams, "patternProperties");
+test("run_experiment schema should avoid patternProperties for Cloud Code Assist compatibility", () => {
+  const patternPropertyPaths = collectKeyPaths(RunParams, "patternProperties");
 
   assert.equal(
     patternPropertyPaths.length,
     0,
-    `unexpected patternProperties found in LogParams schema at: ${patternPropertyPaths.join(", ")}`,
+    `unexpected patternProperties found in RunParams schema at: ${patternPropertyPaths.join(", ")}`,
   );
 
-  const serialized = JSON.stringify(LogParams);
+  const serialized = JSON.stringify(RunParams);
   assert.match(
     serialized,
     /"additionalProperties"/,
-    "expected LogParams schema to keep dynamic object support via additionalProperties",
+    "expected RunParams schema to keep dynamic object support via additionalProperties",
   );
 });

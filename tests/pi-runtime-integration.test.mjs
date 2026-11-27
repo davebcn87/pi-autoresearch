@@ -35,7 +35,7 @@ test("Pi 1.7 resource loader loads pi-autoresearch cleanly with defaultActive: f
     const ext = extensions[0];
     assert.deepEqual(
       [...ext.tools.keys()].sort(),
-      ["init_experiment", "log_experiment", "run_experiment"],
+      ["init_experiment", "run_experiment"],
     );
     for (const tool of ext.tools.values()) {
       assert.equal(tool.definition.defaultActive, false);
@@ -132,32 +132,16 @@ test("live edits to .auto/config.json take effect immediately and checks gate bl
       direction: "lower",
     }, undefined, undefined, ctx);
 
+    // Passing benchmark + failing checks automatically logs as checks_failed (never keep).
     const runRes = await tools.get("run_experiment").execute("run1", {
-      command: "./.auto/measure.sh",
+      description: "checks failed attempt",
+      hypothesis: "h1",
     }, undefined, undefined, ctx);
     assert.equal(runRes.details.parsedPrimary, 42);
     assert.equal(runRes.details.checksPass, false);
-
-    // Attempting to keep when checks failed must be rejected.
-    const blockedKeep = await tools.get("log_experiment").execute("log1", {
-      commit: "1111111",
-      metric: 42,
-      status: "keep",
-      description: "should fail gate",
-      metrics: {},
-      asi: { hypothesis: "h1" },
-    }, undefined, undefined, ctx);
-    assert.match(blockedKeep.content[0].text, /Cannot keep — \.auto\/checks\.sh failed/);
-
-    // Now log as checks_failed, then hot-enable compactEvery=1 via .auto/config.json.
-    await tools.get("log_experiment").execute("log2", {
-      commit: "1111111",
-      metric: 42,
-      status: "checks_failed",
-      description: "checks failed",
-      metrics: {},
-      asi: { hypothesis: "h1", rollback_reason: "lint failed" },
-    }, undefined, undefined, ctx);
+    assert.equal(runRes.details.logged, true);
+    assert.equal(runRes.details.experiment.status, "checks_failed");
+    assert.equal(runRes.details.state.bestMetric, null);
 
     await writeFile(join(cwd, ".auto", "config.json"), JSON.stringify({ compactEvery: 1 }) + "\n");
 

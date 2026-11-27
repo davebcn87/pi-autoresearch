@@ -10,8 +10,7 @@ Autonomous experiment loop: try ideas, keep what works, discard what doesn't, ne
 ## Tools
 
 - **`init_experiment`** — configure session (name, metric, unit, direction). Call again to re-initialize with a new baseline when the optimization target changes.
-- **`run_experiment`** — runs command, times it, captures output.
-- **`log_experiment`** — records result. `metric`, secondary `metrics`, and `commit` auto-fill from the last `run_experiment` / `HEAD` unless overridden. `keep` auto-commits code changes, `discard`/`crash`/`checks_failed` auto-revert code changes, and `.auto/` learnings/logs are always committed on every run. Fullscreen dashboard: `/autoresearch dashboard`.
+- **`run_experiment`** — runs `.auto/measure.sh` (default) + `.auto/checks.sh`, parses `METRIC`/`TIMING`, auto-decides `keep`/`discard`/`crash`/`checks_failed`, commits or reverts code, and commits `.auto/` learnings in one call. Pass `description` + optional `hypothesis`, `prev_learning`, `keep_on_tie`, `revisits_run`, or `asi`. Fullscreen dashboard: `/autoresearch dashboard`.
 
 ## Session files
 
@@ -34,7 +33,7 @@ All session files live in a single `.auto/` subfolder at the working directory r
 1. Ask (or infer) the **Goal** and primary **Metric** (+ unit/direction), then **call `init_experiment` immediately**. This must precede implementation, optimization, lengthy source exploration, or any benchmark attempt. Do not wait until the system works or a baseline exists. Never replace the experiment tools with handwritten logs or shell-only experiment loops; if the tools are missing, report the activation problem rather than silently proceeding.
 2. Infer **Command**, **Files in scope**, and **Constraints**. Create `autoresearch/<goal>-<date>` if needed, preserving existing user work.
 3. Read enough source to define a representative benchmark. Write `.auto/prompt.md`, `.auto/measure.sh`, and required `.auto/checks.sh`; checkpoint the initial state before potentially reverting failed runs. For a from-scratch implementation, keep every build/validation attempt visible in the tool-managed loop while bringing it up.
-4. Call `run_experiment` → `log_experiment` for every attempt, including failures. Log crashes as `crash` and correctness failures as `checks_failed`; neither establishes a baseline. **The first successful run** (benchmark plus all required checks pass, with a measured primary metric) is logged as `keep` and establishes the baseline. Do not fabricate a baseline or reinitialize to hide failed attempts.
+4. Call `run_experiment` for every attempt. Crashes and check failures are logged and auto-reverted; neither establishes a baseline. If a passing command omits `METRIC <primary>=<number>`, fix the script output format and re-run. **The first successful run** automatically establishes the baseline.
 5. Optimize relative to that baseline and continue the tool-managed loop immediately.
 
 ### `.auto/prompt.md`
@@ -80,7 +79,7 @@ Bash script (`set -euo pipefail`) that: pre-checks fast (syntax errors in <1s), 
 
 - `METRIC name=value` — primary metric (must match `init_experiment`'s `metric_name`) and any secondary metrics. Parsed automatically by `run_experiment`.
 - **Optional timing:** emit `TIMING start build` / `TIMING end build`, and similarly for `benchmark`, `load`, etc. Names use letters/digits/`_.:/-`, up to 80 characters; nested/repeated spans work. An optional final Unix timestamp in **milliseconds** avoids stdout-buffering artifacts. Otherwise receipt time is used; flush output for precision. Incomplete/invalid spans are advisory, not benchmark failures. Do not use reserved names `run_experiment`, `checks`, or `agent/other`. The tool always emits its own `run_experiment` start/end timing; instrument only useful subdivisions inside the benchmark command.
-- Full-loop time, command/check wall time, and the longest measured exclusive step are saved automatically by `log_experiment` and shown in the dashboard. `agent/other` is unattributed wall time (reasoning, editing, other tools, etc.), not a measurement of inference alone. Use this feedback to reduce iteration overhead as well as optimize the target. Timing is optional; never delay initialization or baseline measurement to add it.
+- Full-loop time, command/check wall time, and the longest measured exclusive step are saved automatically by `run_experiment` and shown in the dashboard. `agent/other` is unattributed wall time (reasoning, editing, other tools, etc.), not a measurement of inference alone. Use this feedback to reduce iteration overhead as well as optimize the target. Timing is optional; never delay initialization or baseline measurement to add it.
 - Reinitializing a baseline preserves a dimmed comparison against the first successful baseline with the same metric name/unit/direction. Retain earlier attempts; do not reset history to improve reported progress.
 
 #### Design the script to inform optimization
@@ -94,9 +93,9 @@ The script should output **whatever data helps you make better decisions in the 
 
 The script runs the same code every iteration — but you can **update it during the loop** if you discover you need more signal. Add instrumentation as you learn what matters.
 
-#### Agent-supplied ASI via `log_experiment`
+#### Capturing learnings via `run_experiment`
 
-Use `log_experiment`'s `asi` parameter to annotate each run with **whatever would help the next iteration make a better decision.** Free-form key/value pairs — you decide what's worth recording. Don't repeat the description or raw output; capture what you'd lose after a context reset.
+Pass `hypothesis` (before running) and `prev_learning` (takeaway from the previous run's output) or `asi` on `run_experiment` to preserve what you learned across reverts and compactions.
 
 **Annotate failures and crashes heavily.** Discarded and crashed runs are reverted — the code changes are gone. The only record that survives is the description and ASI in `.auto/log.jsonl`. If you don't capture what you tried and why it failed, future iterations will waste time re-discovering the same dead ends.
 
@@ -145,7 +144,7 @@ pnpm typecheck 2>&1 | grep -i error || true
 
 - **Primary metric is king.** Improved → `keep`. Worse/equal → `discard`. Secondary metrics rarely affect this.
 - **Annotate every run with `asi`.** Record what you learned — not what you did. What would help the next iteration or a fresh agent resuming this session?
-- **Watch the confidence score.** After 3+ runs, `log_experiment` reports a confidence score (best improvement as a multiple of the session noise floor). ≥2.0× means the improvement is likely real. <1.0× means it's within noise — consider re-running to confirm before keeping. The score is advisory — it never auto-discards.
+- **Watch marginal confidence.** On `keep`, `run_experiment` reports marginal confidence (gain over previous best vs. local noise floor). <1.0× means the marginal bump is within noise — consider a verification rerun.
 - **Simpler is better.** Removing code for equal perf = keep. Ugly complexity for tiny gain = probably discard.
 - **Don't thrash.** Repeatedly reverting the same idea? Try something structurally different.
 - **Crashes:** fix if trivial, otherwise log and move on. Don't over-invest.
@@ -162,4 +161,4 @@ On resume (context limit, crash), check `.auto/ideas.md` — prune stale/tried e
 
 ## User Messages During Experiments
 
-If the user sends a message while an experiment is running, finish the current `run_experiment` + `log_experiment` cycle first, then incorporate their feedback in the next iteration. Don't abandon a running experiment.
+If the user sends a message while an experiment is running, let the current `run_experiment` finish first, then incorporate their feedback in the next iteration. Don't abandon a running experiment.

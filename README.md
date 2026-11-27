@@ -46,8 +46,7 @@ Then start the loop inside pi:
 | Tool | Description |
 |------|-------------|
 | `init_experiment` | One-time session config — name, metric, unit, direction |
-| `run_experiment` | Runs any command, times wall-clock duration, captures output |
-| `log_experiment` | Records result, auto-commits, updates widget and dashboard |
+| `run_experiment` | Runs benchmark + checks, parses `METRIC`/`TIMING`, decides keep/discard/crash/checks_failed, auto-commits/reverts code, persists `.auto/` in git, and updates dashboards |
 
 ### `/autoresearch` command
 
@@ -184,11 +183,11 @@ Then `/reload` in pi.
 
 This activates autoresearch mode and makes the experiment tools available. If `.auto/prompt.md` does not exist, it also loads the `autoresearch-create` skill. Calling `/skill:autoresearch-create` directly also activates the mode before skill expansion. An existing `.auto/prompt.md` or experiment log activates a same-directory session, including when those files are created during an already-running session. An explicit pause remains visibly paused across reloads; finalize or deleting `.auto/` stops the session. Redirected working directories still require this session to opt in.
 
-The agent infers the goal and metric and calls `init_experiment` immediately, before implementation, optimization, or lengthy exploration. It then creates a branch, writes the playbook and benchmark/check scripts, and runs every attempt through `run_experiment` → `log_experiment`. Crashes and failed correctness checks remain visible but never establish the baseline. The first successful run is kept as the baseline; optimization continues from there. The widget shows initialization immediately, even while waiting for a successful baseline.
+The agent infers the goal and metric and calls `init_experiment` immediately, before implementation, optimization, or lengthy exploration. It then creates a branch, writes the playbook and benchmark/check scripts, and runs every attempt through `run_experiment`. Crashes and failed correctness checks are logged and auto-reverted (never establishing the baseline); passing commands that omit the required `METRIC <primary>=<number>` line report a format error without logging or touching git. The first successful run establishes the baseline; optimization continues from there.
 
 ### 2. The loop
 
-The agent runs autonomously: edit → `run_experiment` → `log_experiment` → auto-commit or revert → repeat. Continuation uses Pi’s native `{ continue: true }` boundary, not timers or injected “continue” messages.
+The agent runs autonomously: edit → `run_experiment` (which runs, checks, decides, commits/reverts code, and commits `.auto/` learnings) → repeat. Continuation uses Pi’s native `{ continue: true }` boundary, not timers or injected “continue” messages.
 
 **Esc means pause.** Aborting an active run—including during a continuation boundary or retry backoff—leaves **autoresearch paused** visible and persisted across reloads. It never queues an automatic restart. Resume explicitly with `/autoresearch resume` (or `/autoresearch <context>`). Closing the dashboard with Esc only closes that UI; it does not abort the agent.
 
@@ -237,7 +236,7 @@ Timing is automatically attached to each logged run under `timing` in `.auto/log
 
 - `runSeconds`: command wall time (includes builds inside the command).
 - `checksSeconds`: separately measured correctness checks.
-- `loopSeconds`: full iteration wall time, from the previous `log_experiment` entry to this one; the first starts at activation/initialization. This includes agent reasoning, editing/other tools, and the previous log's git/hooks overhead. Pause/reload starts a fresh timing window, excluding paused/offline time. Timing for historical runs is never invented.
+- `loopSeconds`: full iteration wall time, from the previous logged run to this one; the first starts at activation/initialization. This includes agent reasoning, editing/other tools, and the previous run's git/hooks overhead. Pause/reload starts a fresh timing window, excluding paused/offline time. Timing for historical runs is never invented.
 - `spans`: named spans with `startedAt`/`endedAt` Unix milliseconds and `source`.
 - `longest`: the largest measured exclusive phase, aggregating repeated names. Nested child spans are subtracted from their enclosing spans, so a 30s build inside a 32s command is not counted twice. Overlapping parallel phases are not additive.
 - `agent/other` is the **unattributed remainder**, not a claim that all that time was LLM inference.
@@ -280,7 +279,7 @@ The **extension** is domain-agnostic infrastructure. The **skill** encodes domai
 │  Extension (global)  │     │  Skill (per-domain)       │
 │                      │     │                           │
 │  run_experiment      │◄────│  command: pnpm test       │
-│  log_experiment      │     │  metric: seconds (lower)  │
+│  (auto-commit/log)   │     │  metric: seconds (lower)  │
 │  widget + dashboard  │     │  scope: vitest configs    │
 │                      │     │  ideas: pool, parallel…   │
 └──────────────────────┘     └──────────────────────────┘
@@ -330,7 +329,7 @@ After 3+ experiments in a session, pi-autoresearch computes a **confidence score
 
 - Uses [Median Absolute Deviation (MAD)](https://en.wikipedia.org/wiki/Median_absolute_deviation) of all metric values in the current segment as a robust noise estimator.
 - Confidence = `|best_improvement| / MAD`. A score of 2.0× means the best improvement is twice the noise floor.
-- Shown in the widget, fullscreen dashboard, and `log_experiment` output.
+- Shown in the widget, fullscreen dashboard, and `run_experiment` output.
 - Persisted to `.auto/log.jsonl` on each result for post-hoc analysis.
 - **Advisory only** — never auto-discards. The agent is guided to re-run experiments when confidence is low, but the final keep/discard decision stays with the agent.
 
@@ -368,8 +367,8 @@ pnpm typecheck
 
 Drop executable scripts in `.auto/hooks/` to run code at iteration boundaries. Hooks are **transparent to the agent** — the agent calls tools and sees results; hooks run alongside without any agent-facing surface.
 
-- `.auto/hooks/before.sh` — fires before every iteration (at `/autoresearch` activation and at the end of every `log_experiment`, after `after.sh`). Use for prospective work: fetch research, prime context for the next attempt.
-- `.auto/hooks/after.sh` — fires at the end of every `log_experiment`. Use for retrospective work: annotate learnings, send notifications.
+- `.auto/hooks/before.sh` — fires before every iteration (at `/autoresearch` activation and at the end of every logged `run_experiment`, after `after.sh`). Use for prospective work: fetch research, prime context for the next attempt.
+- `.auto/hooks/after.sh` — fires at the end of every logged `run_experiment`. Use for retrospective work: annotate learnings, send notifications.
 
 **Contract:**
 
@@ -414,7 +413,7 @@ Drop executable scripts in `.auto/hooks/` to run code at iteration boundaries. H
 }
 ```
 
-**Agent signal.** The agent writes `description` and `asi.*` fields in its `log_experiment` calls for its own future-self reasoning. The hook opportunistically mines whichever fields the agent naturally uses — `asi.hypothesis`, `asi.next_focus`, `description`, etc. There is no dedicated "hook input" field; the agent is unaware the hook exists.
+**Agent signal.** The agent writes `description`, `hypothesis`, `prev_learning`, and `asi.*` fields in its `run_experiment` calls for its own future-self reasoning. The hook opportunistically mines whichever fields the agent naturally uses — `asi.hypothesis`, `asi.learning`, `description`, etc. There is no dedicated "hook input" field; the agent is unaware the hook exists.
 
 **Examples.** Reference scripts for both stages live at [`skills/autoresearch-hooks/examples/`](skills/autoresearch-hooks/examples/) — external search, qmd document search, persistent learnings, native notifications, git tagging, anti-thrash, idea rotator, hypothesis reflection, context rotation. Copy one to your session's `.auto/hooks/` directory, adapt, `chmod +x`.
 

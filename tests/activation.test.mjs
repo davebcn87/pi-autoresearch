@@ -12,7 +12,7 @@ import autoresearchExtension, {
 } from "../extensions/pi-autoresearch/index.ts";
 
 const ACTIVATION_ENTRY = "pi-autoresearch.activation";
-const AUTORESEARCH_TOOLS = ["init_experiment", "log_experiment", "run_experiment"];
+const AUTORESEARCH_TOOLS = ["init_experiment", "run_experiment"];
 const FINALIZE_KICKOFF = { content: "/skill:autoresearch-finalize", options: { expandPromptTemplates: true } };
 
 function createHarness({ cwd, branch = [], initialActiveTools = [], busy = false }) {
@@ -388,10 +388,17 @@ test("failed attempts leave baseline unset until the first kept measurement, inc
     const harness = createHarness({ cwd });
     await harness.tools.get("init_experiment").execute("init", { name: "TPS", metric_name: "tps", direction: "higher" }, undefined, undefined, harness.ctx);
     assert.match(harness.widgets.at(-1).widget[0], /awaiting first successful baseline/);
-    for (const [index, status] of ["crash", "checks_failed", "keep"].entries()) {
-      const result = await harness.tools.get("log_experiment").execute(`run${index}`, { commit: "abcdef0", status, metric: 10 + index, description: status, metrics: {}, asi: { hypothesis: "test" } }, undefined, undefined, harness.ctx);
-      assert.equal(result.details.state.bestMetric, status === "keep" ? 12 : null);
-    }
+    const r1 = await harness.tools.get("run_experiment").execute("run0", { command: "exit 1", description: "crash", hypothesis: "test" }, undefined, undefined, harness.ctx);
+    assert.equal(r1.details.experiment.status, "crash");
+    assert.equal(r1.details.state.bestMetric, null);
+
+    // Checks failure: write failing .auto/checks.sh (harness exec returns code 0 unless overridden, so use failing command first then passing)
+    const r2 = await harness.tools.get("run_experiment").execute("run1", { command: "exit 2", description: "crash2", hypothesis: "test" }, undefined, undefined, harness.ctx);
+    assert.equal(r2.details.state.bestMetric, null);
+
+    const r3 = await harness.tools.get("run_experiment").execute("run2", { command: "printf 'METRIC tps=12\\n'", description: "first success", hypothesis: "test" }, undefined, undefined, harness.ctx);
+    assert.equal(r3.details.experiment.status, "keep");
+    assert.equal(r3.details.state.bestMetric, 12);
     const reloaded = createHarness({ cwd });
     await reloaded.handlers.get("session_start")({}, reloaded.ctx);
     const view = reloaded.widgets.at(-1).widget({}, PLAIN_THEME).render(120).join("\n");
@@ -407,7 +414,7 @@ test("iteration limits leave a playbook-backed loop visibly paused across reload
     await writeFile(join(cwd, ".auto/config.json"), JSON.stringify({ maxIterations: 1 }));
     const harness = createHarness({ cwd });
     await harness.tools.get("init_experiment").execute("init", { name: "TPS", metric_name: "tps", direction: "higher" }, undefined, undefined, harness.ctx);
-    await harness.tools.get("log_experiment").execute("log", { commit: "abcdef0", status: "keep", metric: 100, metrics: {}, description: "measurement", asi: {} }, undefined, undefined, harness.ctx);
+    await harness.tools.get("run_experiment").execute("run", { command: "printf 'METRIC tps=100\\n'", description: "measurement" }, undefined, undefined, harness.ctx);
     assert.match(harness.widgets.at(-1).widget.join("\n"), /autoresearch paused/);
     const reloaded = createHarness({ cwd, branch: harness.appendedEntries.map((entry) => ({ type: "custom", ...entry })) });
     await reloaded.handlers.get("session_start")({}, reloaded.ctx);
@@ -421,13 +428,12 @@ test("run_experiment always emits automatic TIMING and persists untruncated opti
     const harness = createHarness({ cwd });
     await harness.tools.get("init_experiment").execute("init", { name: "Timing", metric_name: "tps", metric_unit: "tok/s", direction: "higher" }, undefined, undefined, harness.ctx);
     await writeFile(join(cwd, ".auto/measure.sh"), "printf 'TIMING start build\\n'; printf 'line\\n%.0s' {1..2000}; printf 'TIMING end build\\nMETRIC tps=100\\n'\n");
-    const run = await harness.tools.get("run_experiment").execute("run", { command: "bash .auto/measure.sh" }, undefined, undefined, harness.ctx);
+    const run = await harness.tools.get("run_experiment").execute("run", { command: "bash .auto/measure.sh", description: "first" }, undefined, undefined, harness.ctx);
     assert.match(run.content[0].text, /TIMING start run_experiment \d+/);
     assert.match(run.content[0].text, /TIMING end run_experiment \d+/);
     assert.ok(run.details.timing.spans.some((span) => span.name === "build"));
-    const logged = await harness.tools.get("log_experiment").execute("log", { commit: "abcdef0", status: "keep", metric: 100, metrics: {}, description: "first", asi: {} }, undefined, undefined, harness.ctx);
-    assert.ok(logged.details.experiment.timing.loopSeconds >= logged.details.experiment.timing.runSeconds);
-    assert.match(logged.content[0].text, /Loop .* · run .* · longest:/);
+    assert.ok(run.details.experiment.timing.loopSeconds >= run.details.experiment.timing.runSeconds);
+    assert.match(run.content[0].text, /Loop .* · run .* · longest:/);
     const reloaded = createHarness({ cwd });
     await reloaded.handlers.get("session_start")({}, reloaded.ctx);
     const view = reloaded.widgets.at(-1).widget({}, PLAIN_THEME).render(160).join("\n");
@@ -435,20 +441,18 @@ test("run_experiment always emits automatic TIMING and persists untruncated opti
   } finally { await rm(cwd, { recursive: true, force: true }); }
 });
 
-test("failed run gets automatic timing and cannot be kept as baseline", async () => {
+test("failed run gets automatic timing, logs as crash, and never establishes baseline", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-timing-fail-"));
   try {
     const harness = createHarness({ cwd });
     await harness.tools.get("init_experiment").execute("init", { name: "Timing", metric_name: "tps", direction: "higher" }, undefined, undefined, harness.ctx);
-    const run = await harness.tools.get("run_experiment").execute("run", { command: "exit 1" }, undefined, undefined, harness.ctx);
+    const run = await harness.tools.get("run_experiment").execute("run", { command: "exit 1", description: "bad baseline" }, undefined, undefined, harness.ctx);
     assert.equal(run.details.passed, false);
+    assert.equal(run.details.logged, true);
+    assert.equal(run.details.experiment.status, "crash");
+    assert.equal(run.details.state.bestMetric, null);
     assert.match(run.content[0].text, /TIMING end run_experiment/);
-    const params = { commit: "abcdef0", status: "keep", metric: 100, metrics: {}, description: "bad baseline", asi: {} };
-    const blocked = await harness.tools.get("log_experiment").execute("log", params, undefined, undefined, harness.ctx);
-    assert.match(blocked.content[0].text, /Cannot keep.*benchmark failed/);
-    const logged = await harness.tools.get("log_experiment").execute("log", { ...params, status: "crash", metric: 0 }, undefined, undefined, harness.ctx);
-    assert.equal(logged.details.state.bestMetric, null);
-    assert.ok(logged.details.experiment.timing);
+    assert.ok(run.details.experiment.timing);
   } finally { await rm(cwd, { recursive: true, force: true }); }
 });
 
@@ -458,12 +462,13 @@ test("timing end is emitted for timed-out and aborted commands too", async () =>
     const harness = createHarness({ cwd });
     await harness.tools.get("init_experiment").execute("init", { name: "Timing", metric_name: "tps", direction: "higher" }, undefined, undefined, harness.ctx);
     const command = `node -e 'console.log("ready"); setInterval(() => {}, 1000)'`;
-    const timedOut = await harness.tools.get("run_experiment").execute("timeout", { command, timeout_seconds: 0.01 }, undefined, undefined, harness.ctx);
+    const timedOut = await harness.tools.get("run_experiment").execute("timeout", { command, description: "hang", timeout_seconds: 0.01 }, undefined, undefined, harness.ctx);
     assert.equal(timedOut.details.timedOut, true);
+    assert.equal(timedOut.details.experiment.status, "crash");
     assert.match(timedOut.content[0].text, /TIMING end run_experiment/);
     const controller = new AbortController();
     const updates = [];
-    await assert.rejects(harness.tools.get("run_experiment").execute("abort", { command }, controller.signal, (update) => {
+    await assert.rejects(harness.tools.get("run_experiment").execute("abort", { command, description: "aborted" }, controller.signal, (update) => {
       updates.push(update);
       if (update.content[0]?.text.includes("ready")) controller.abort();
     }, harness.ctx), /aborted/);
@@ -476,8 +481,8 @@ test("Progress appends overall delta after a baseline reset, including after rel
   try {
     const harness = createHarness({ cwd });
     const init = async () => harness.tools.get("init_experiment").execute("init", { name: "TPS", metric_name: "tps", metric_unit: "tok/s", direction: "higher" }, undefined, undefined, harness.ctx);
-    const log = async (metric) => harness.tools.get("log_experiment").execute("log", { commit: "abcdef0", status: "keep", metric, metrics: {}, description: "measurement", asi: {} }, undefined, undefined, harness.ctx);
-    await init(); await log(100); await init(); await log(300); await log(400);
+    const runMetric = async (metric) => harness.tools.get("run_experiment").execute("run", { command: `printf 'METRIC tps=${metric}\\n'`, description: "measurement" }, undefined, undefined, harness.ctx);
+    await init(); await runMetric(100); await init(); await runMetric(300); await runMetric(400);
     const render = (value) => value.widgets.at(-1).widget({}, PLAIN_THEME).render(200).join("\n");
     assert.match(render(harness), /Progress:.*\(\+33.3%\).*\(\+300.0% from first baseline\)/);
     const reloaded = createHarness({ cwd });
@@ -694,7 +699,7 @@ test("Esc and exhausted native retries persist a pause without any restart messa
       const harness = createHarness({ cwd });
       await harness.handlers.get("session_start")({}, harness.ctx);
       await harness.handlers.get("agent_start")({}, harness.ctx);
-      await harness.tools.get("log_experiment").execute("log", { commit: "abcdef0", status: "keep", metric: 9, description: "measured", metrics: {}, asi: {} }, undefined, undefined, harness.ctx);
+      await harness.tools.get("run_experiment").execute("run", { command: "printf 'METRIC runtime_ms=9\\n'", description: "measured" }, undefined, undefined, harness.ctx);
       await harness.handlers.get("agent_end")({}, harness.ctx);
       assert.equal(harness.customMessages.length, 0);
       assert.equal(harness.sentMessages.length, 0);
@@ -1065,29 +1070,36 @@ test("/autoresearch clear turns off, deletes the log, and records a manual off d
   }
 });
 
-for (const status of ["keep", "discard", "crash", "checks_failed"]) {
+for (const [label, command] of [
+  ["keep", "printf 'METRIC runtime_ms=9\\n'"],
+  ["discard", "printf 'METRIC runtime_ms=12\\n'"],
+  ["crash", "exit 1"],
+]) {
   for (const limitReached of [false, true]) {
-    test(`log_experiment ${status} ${limitReached ? "stops without" : "includes"} the discard reminder`, async () => {
+    test(`run_experiment ${label} ${limitReached ? "stops without" : "includes"} the discard reminder`, async () => {
       const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-reminder-"));
       try {
-        await writeSameCwdLog(cwd);
+        await mkdir(join(cwd, ".auto"), { recursive: true });
+        await writeFile(join(cwd, ".auto", "log.jsonl"), [
+          JSON.stringify({ type: "config", name: "Same-cwd research", metricName: "runtime_ms", metricUnit: "ms", bestDirection: "lower" }),
+          JSON.stringify({ run: 1, commit: "abcdef0", metric: 10, metrics: {}, status: "keep", description: "baseline", timestamp: 1 }),
+        ].join("\n") + "\n");
         if (limitReached) {
           await writeFile(join(cwd, ".auto", "config.json"), JSON.stringify({ maxIterations: 2 }));
         }
         const harness = createHarness({ cwd });
         await harness.handlers.get("session_start")({}, harness.ctx);
 
-        const result = await harness.tools.get("log_experiment").execute("test", {
-          commit: "abcdef0",
-          metric: 9,
-          status,
+        const result = await harness.tools.get("run_experiment").execute("test", {
+          command,
           description: "test experiment",
-          metrics: {},
-          asi: { hypothesis: "test hypothesis", revisits_run: 1 },
+          hypothesis: "test hypothesis",
+          revisits_run: 1,
         }, undefined, undefined, harness.ctx);
+        assert.equal(result.details.experiment.status, label);
         const text = result.content[0].text;
-        const rendered = harness.tools.get("log_experiment").renderResult(
-          result, { expanded: false }, { fg: (_color, text) => text },
+        const rendered = harness.tools.get("run_experiment").renderResult(
+          result, { expanded: false, isPartial: false }, { fg: (_color, text) => text },
         ).render(100).join("\n");
         assert.match(rendered, /↻ Revisiting #1/);
         assert.equal(result.details.experiment.asi.revisits_run, 1);
@@ -1110,13 +1122,13 @@ for (const status of ["keep", "discard", "crash", "checks_failed"]) {
   }
 }
 
-test("log_experiment leaves ordinary results unchanged and ignores malformed revisit annotations", () => {
+test("run_experiment leaves ordinary results unchanged and ignores malformed revisit annotations", () => {
   const harness = createHarness({ cwd: "/unused" });
   const { details } = staleLogExperimentEntry().message;
-  const render = (asi) => harness.tools.get("log_experiment").renderResult({
+  const render = (asi) => harness.tools.get("run_experiment").renderResult({
     content: [],
-    details: { ...details, experiment: { ...details.state.results[0], asi } },
-  }, { expanded: false }, { fg: (_color, text) => text }).render(100);
+    details: { durationSeconds: 1, tailOutput: "", checksPass: null, checksTimedOut: false, checksOutput: "", checksDuration: 0, parsedPrimary: 10, metricName: "runtime_ms", metricUnit: "ms", ...details, experiment: { ...details.state.results[0], asi } },
+  }, { expanded: false, isPartial: false }, { fg: (_color, text) => text }).render(100);
   const ordinaryResult = render(undefined);
 
   assert.doesNotMatch(ordinaryResult.join("\n"), /Revisiting/);
@@ -1125,13 +1137,13 @@ test("log_experiment leaves ordinary results unchanged and ignores malformed rev
   }
 });
 
-test("log_experiment revisit label wraps within narrow terminal widths", () => {
+test("run_experiment revisit label wraps within narrow terminal widths", () => {
   const harness = createHarness({ cwd: "/unused" });
   const { details } = staleLogExperimentEntry().message;
-  const component = harness.tools.get("log_experiment").renderResult({
+  const component = harness.tools.get("run_experiment").renderResult({
     content: [],
-    details: { ...details, experiment: { ...details.state.results[0], asi: { revisits_run: 5 } } },
-  }, { expanded: false }, { fg: (_color, text) => text });
+    details: { durationSeconds: 1, tailOutput: "", checksPass: null, checksTimedOut: false, checksOutput: "", checksDuration: 0, parsedPrimary: 10, metricName: "runtime_ms", metricUnit: "ms", ...details, experiment: { ...details.state.results[0], asi: { revisits_run: 5 } } },
+  }, { expanded: false, isPartial: false }, { fg: (_color, text) => text });
 
   for (const width of [20, 80]) {
     const lines = component.render(width);
@@ -1215,14 +1227,11 @@ test("agent_before_settle resumes after logged experiments and skips chat-only o
     );
     assert.equal(chatSettle, undefined);
 
-    // Log an experiment during this run.
-    await harness.tools.get("log_experiment").execute("t1", {
-      commit: "abcdef0",
-      metric: 9,
-      status: "keep",
+    // Run an experiment during this run.
+    await harness.tools.get("run_experiment").execute("t1", {
+      command: "printf 'METRIC runtime_ms=9\\n'",
       description: "faster",
-      metrics: {},
-      asi: { hypothesis: "cache hot path" },
+      hypothesis: "cache hot path",
     }, undefined, undefined, harness.ctx);
 
     // Aborted outcome must not auto-resume and must reset the run window.
@@ -1237,13 +1246,10 @@ test("agent_before_settle resumes after logged experiments and skips chat-only o
     // Only an explicit resume re-enables the loop after cancellation.
     await harness.commands.get("autoresearch").handler("resume", harness.ctx);
     await harness.handlers.get("agent_start")({}, harness.ctx);
-    await harness.tools.get("log_experiment").execute("t2", {
-      commit: "abcdef1",
-      metric: 8,
-      status: "keep",
+    await harness.tools.get("run_experiment").execute("t2", {
+      command: "printf 'METRIC runtime_ms=8\\n'",
       description: "even faster",
-      metrics: {},
-      asi: { hypothesis: "eliminate allocation" },
+      hypothesis: "eliminate allocation",
     }, undefined, undefined, harness.ctx);
 
     const completedSettle = await harness.handlers.get("agent_before_settle")(
@@ -1258,13 +1264,10 @@ test("agent_before_settle resumes after logged experiments and skips chat-only o
 
     // When Pi already has runnable context (e.g., queued message / non-assistant tail), no hidden message is added.
     await harness.handlers.get("agent_start")({}, harness.ctx);
-    await harness.tools.get("log_experiment").execute("t3", {
-      commit: "abcdef2",
-      metric: 7,
-      status: "keep",
+    await harness.tools.get("run_experiment").execute("t3", {
+      command: "printf 'METRIC runtime_ms=7\\n'",
       description: "faster still",
-      metrics: {},
-      asi: { hypothesis: "zero-copy" },
+      hypothesis: "zero-copy",
     }, undefined, undefined, harness.ctx);
     const runnableSettle = await harness.handlers.get("agent_before_settle")(
       { outcome: "completed", entries: [], continue: false, context: { canContinue: true } },
@@ -1317,13 +1320,10 @@ test("compactEvery triggers deterministic compaction draft with firstKeptEntryId
     await harness.handlers.get("agent_start")({}, harness.ctx);
 
     // 1st experiment: below cadence -> no compaction draft.
-    await harness.tools.get("log_experiment").execute("t1", {
-      commit: "1111111",
-      metric: 9,
-      status: "keep",
+    await harness.tools.get("run_experiment").execute("t1", {
+      command: "printf 'METRIC runtime_ms=9\\n'",
       description: "first",
-      metrics: {},
-      asi: { hypothesis: "h1" },
+      hypothesis: "h1",
     }, undefined, undefined, harness.ctx);
     const turn1 = await harness.handlers.get("turn_end")(
       { outcome: "completed", entries: [], continue: false, toolResults: [] },
@@ -1332,13 +1332,10 @@ test("compactEvery triggers deterministic compaction draft with firstKeptEntryId
     assert.equal(turn1, undefined);
 
     // 2nd experiment: hits compactEvery=2 -> compaction + native continuation.
-    await harness.tools.get("log_experiment").execute("t2", {
-      commit: "2222222",
-      metric: 8,
-      status: "keep",
+    await harness.tools.get("run_experiment").execute("t2", {
+      command: "printf 'METRIC runtime_ms=8\\n'",
       description: "second",
-      metrics: {},
-      asi: { hypothesis: "h2" },
+      hypothesis: "h2",
     }, undefined, undefined, harness.ctx);
     const turn2 = await harness.handlers.get("turn_end")(
       { outcome: "completed", entries: [], continue: false, toolResults: [] },
