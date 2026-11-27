@@ -659,7 +659,44 @@ test("finalize stops an active loop and loads the finalize skill", async () => {
   }
 });
 
-test("manual session_compact while idle immediately resumes the loop", async () => {
+test("Esc and exhausted native retries persist a pause without any restart message", async () => {
+  for (const stop of ["escape", "escape-during-boundary", "error"]) {
+    const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-cancel-"));
+    try {
+      await writeSameCwdLog(cwd);
+      await writeFile(join(cwd, ".auto/prompt.md"), "Optimize latency\n");
+      const harness = createHarness({ cwd });
+      await harness.handlers.get("session_start")({}, harness.ctx);
+      await harness.handlers.get("agent_start")({}, harness.ctx);
+      await harness.tools.get("log_experiment").execute("log", { commit: "abcdef0", status: "keep", metric: 9, description: "measured", metrics: {}, asi: {} }, undefined, undefined, harness.ctx);
+      await harness.handlers.get("agent_end")({}, harness.ctx);
+      assert.equal(harness.customMessages.length, 0);
+      assert.equal(harness.sentMessages.length, 0);
+      if (stop !== "escape") {
+        const result = await harness.handlers.get("agent_before_settle")({ outcome: stop === "error" ? "error" : "completed", entries: [], continue: false }, harness.ctx);
+        assert.equal(result?.continue, stop === "error" ? undefined : true);
+        if (result) assert.deepEqual(result.entries, []);
+      }
+      // Pi skips before_settle on abort; an abort during a handler suppresses
+      // its proposed continuation and still emits this final notification.
+      await harness.handlers.get("agent_settled")({ aborted: stop !== "error" }, harness.ctx);
+      assert.match(harness.widgets.at(-1).widget.join("\n"), /autoresearch paused/);
+      assert.deepEqual(harness.activeTools(), []);
+      assert.equal(harness.aborted(), false, "settled notification must not recursively abort");
+      await harness.handlers.get("turn_end")({ outcome: "completed", entries: [], continue: false }, harness.ctx);
+      const sections = {};
+      await harness.handlers.get("before_agent_start")({ prompt: "explain the result", systemPromptOptions: { sections } }, harness.ctx);
+      assert.equal("autoresearch" in sections, false);
+      assert.equal(harness.customMessages.length, 0);
+      assert.equal(harness.sentMessages.length, 0);
+      const reloaded = createHarness({ cwd, branch: harness.appendedEntries.map((entry) => ({ type: "custom", ...entry })) });
+      await reloaded.handlers.get("session_start")({}, reloaded.ctx);
+      assert.match(reloaded.widgets.at(-1).widget.join("\n"), /autoresearch paused/);
+    } finally { await rm(cwd, { recursive: true, force: true }); }
+  }
+});
+
+test("manual session_compact pauses without launching another model request", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-cwd-"));
 
   try {
@@ -669,11 +706,9 @@ test("manual session_compact while idle immediately resumes the loop", async () 
     await harness.handlers.get("session_start")({}, harness.ctx);
     await harness.handlers.get("session_compact")({ reason: "manual", willRetry: false }, harness.ctx);
 
-    assert.equal(harness.customMessages.length, 1);
-    assert.equal(harness.customMessages[0].options?.triggerTurn, true);
-    assert.equal(harness.customMessages[0].message.customType, "pi-autoresearch.resume");
-    assert.match(harness.customMessages[0].message.content, /Run the next iteration now/);
-    assert.match(harness.customMessages[0].message.content, /compaction summary already contains them/);
+    assert.equal(harness.customMessages.length, 0);
+    assert.equal(harness.sentMessages.length, 0);
+    assert.match(harness.widgets.at(-1).widget.join("\n"), /autoresearch paused/);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
@@ -716,9 +751,8 @@ test("threshold compaction during a run defers resume to agent_before_settle", a
       harness.ctx,
     );
     assert.equal(settle?.continue, true);
-    assert.equal(settle?.entries.length, 1);
-    assert.equal(settle?.entries[0].type, "custom_message");
-    assert.match(settle?.entries[0].content, /compaction summary already contains them/);
+    assert.deepEqual(settle?.entries, []);
+    assert.equal(harness.sentMessages.length, 0);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
@@ -1167,7 +1201,9 @@ test("agent_before_settle resumes after logged experiments and skips chat-only o
     assert.equal(abortedSettle, undefined);
     await harness.handlers.get("agent_settled")({ aborted: true }, harness.ctx);
 
-    // Next run logs an experiment and completes -> resumes atomically via custom_message + continue: true.
+    assert.match(harness.widgets.at(-1).widget.join("\n"), /autoresearch paused/);
+    // Only an explicit resume re-enables the loop after cancellation.
+    await harness.commands.get("autoresearch").handler("resume", harness.ctx);
     await harness.handlers.get("agent_start")({}, harness.ctx);
     await harness.tools.get("log_experiment").execute("t2", {
       commit: "abcdef1",
@@ -1183,16 +1219,15 @@ test("agent_before_settle resumes after logged experiments and skips chat-only o
       harness.ctx,
     );
     assert.equal(completedSettle?.continue, true);
-    assert.equal(completedSettle?.entries.length, 1);
-    assert.equal(completedSettle?.entries[0].type, "custom_message");
-    assert.equal(completedSettle?.entries[0].customType, "pi-autoresearch.resume");
-    assert.match(completedSettle?.entries[0].content, /Run the next iteration now/);
+    assert.deepEqual(completedSettle?.entries, []);
+    assert.equal(harness.customMessages.length, 0);
 
-    // Message renderer renders compact and expanded views cleanly.
+    // Old session history still renders even though new runs emit no messages.
+    const oldResume = { content: "Run the next iteration now.", details: { turn: 1 } };
     const renderer = harness.messageRenderers.get("pi-autoresearch.resume");
     assert.ok(renderer);
-    const compact = renderer(completedSettle.entries[0], { expanded: false }, PLAIN_THEME).render(100).join("\n");
-    const expanded = renderer(completedSettle.entries[0], { expanded: true }, PLAIN_THEME).render(100).join("\n");
+    const compact = renderer(oldResume, { expanded: false }, PLAIN_THEME).render(100).join("\n");
+    const expanded = renderer(oldResume, { expanded: true }, PLAIN_THEME).render(100).join("\n");
     assert.match(compact, /↻ Autoresearch continuing \(turn 1\)/);
     assert.match(expanded, /Run the next iteration now/);
   } finally {
@@ -1226,7 +1261,7 @@ test("compactEvery triggers deterministic compaction draft with firstKeptEntryId
     );
     assert.equal(turn1, undefined);
 
-    // 2nd experiment: hits compactEvery=2 -> compaction + resume draft.
+    // 2nd experiment: hits compactEvery=2 -> compaction + native continuation.
     await harness.tools.get("log_experiment").execute("t2", {
       commit: "2222222",
       metric: 8,
@@ -1240,12 +1275,12 @@ test("compactEvery triggers deterministic compaction draft with firstKeptEntryId
       harness.ctx,
     );
     assert.equal(turn2?.continue, true);
-    assert.equal(turn2?.entries.length, 2);
+    assert.equal(turn2?.entries.length, 1);
     assert.equal(turn2?.entries[0].type, "compaction");
     assert.equal(turn2?.entries[0].firstKeptEntryId, null);
     assert.match(turn2?.entries[0].summary, /# Autoresearch Compaction Summary/);
-    assert.equal(turn2?.entries[1].type, "custom_message");
-    assert.match(turn2?.entries[1].content, /compaction summary already contains them/);
+    assert.equal(harness.customMessages.length, 0);
+    assert.equal(harness.sentMessages.length, 0);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }

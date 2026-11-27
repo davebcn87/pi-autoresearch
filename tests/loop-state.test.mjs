@@ -158,6 +158,54 @@ test("limitReached on experiment_logged enters stopping and emits abort", () => 
   assert.deepEqual(logged.effects, [{ type: "abort" }]);
 });
 
+test("Esc latches pause before work, after a logged experiment, and during a proposed continuation", () => {
+  for (const suffix of [
+    [],
+    [{ type: "experiment_logged", limitReached: false }],
+    [{ type: "experiment_logged", limitReached: false }, { type: "agent_before_settle", outcome: "completed", compactEvery: null, stopReason: null }],
+    [{ type: "experiment_logged", limitReached: false }, { type: "turn_end", outcome: "completed", compactEvery: 1, stopReason: null }],
+  ]) {
+    const running = runSequence([{ type: "activate" }, { type: "agent_start" }, ...suffix]).state;
+    const paused = step(running, { type: "agent_settled", aborted: true });
+    assert.equal(paused.state.phase, "paused");
+    assert.deepEqual(paused.effects, []);
+    const late = runSequence([
+      { type: "agent_end" },
+      { type: "session_compact", reason: "threshold", willRetry: false, isIdle: true, stopReason: null },
+      { type: "experiment_logged", limitReached: false },
+      { type: "agent_start" },
+      { type: "agent_before_settle", outcome: "completed", compactEvery: 1, stopReason: null },
+      { type: "agent_settled", aborted: false },
+    ], paused.state);
+    assert.equal(late.state.phase, "paused");
+    assert.deepEqual(late.effects, []);
+  }
+});
+
+test("native retries may complete more low-level runs; only exhausted recovery pauses", () => {
+  const running = runSequence([
+    { type: "activate" }, { type: "agent_start" },
+    { type: "experiment_logged", limitReached: false }, // work before error survives retry
+    { type: "agent_end" }, // transient provider error, Pi owns backoff/retry
+    { type: "agent_start" }, // Pi's retry, not a new extension prompt
+    { type: "agent_end" },
+  ]);
+  assert.deepEqual(running.effects, []);
+  const completed = step(running.state, { type: "agent_before_settle", outcome: "completed", compactEvery: null, stopReason: null });
+  assert.equal(completed.effects[0].type, "boundary_continue");
+  const exhausted = step(running.state, { type: "agent_before_settle", outcome: "error", compactEvery: null, stopReason: null });
+  assert.equal(exhausted.state.phase, "paused");
+  assert.deepEqual(exhausted.effects, []);
+  assert.equal(step(exhausted.state, { type: "agent_settled", aborted: false }).state.phase, "paused");
+});
+
+test("manual compaction never schedules a model request", () => {
+  const active = runSequence([{ type: "activate" }, { type: "agent_start" }]).state;
+  const compacted = step(active, { type: "session_compact", reason: "manual", willRetry: false, isIdle: true, stopReason: null });
+  assert.equal(compacted.state.phase, "paused");
+  assert.deepEqual(compacted.effects, []);
+});
+
 test("randomized transition fuzzing preserves all loop state machine invariants", () => {
   // Deterministic PRNG (Mulberry32) so failures are 100% reproducible.
   let seed = 0x5eed1234;
@@ -176,7 +224,7 @@ test("randomized transition fuzzing preserves all loop state machine invariants"
   const stopReasons = [null, null, null, "limit reached"];
 
   const randomEvent = () => {
-    const kind = Math.floor(rand() * 14);
+    const kind = Math.floor(rand() * 15);
     switch (kind) {
       case 0: return { type: "session_restored", active: rand() > 0.5 };
       case 1: return { type: "activate", inActiveRun: rand() > 0.5, resetTurns: rand() > 0.5 };
@@ -204,6 +252,7 @@ test("randomized transition fuzzing preserves all loop state machine invariants"
           stopReason: pick(stopReasons),
         };
       case 12: return { type: "agent_end" };
+      case 14: return { type: "pause", inActiveRun: rand() > 0.5 };
       case 13:
         return rand() > 0.3
           ? {

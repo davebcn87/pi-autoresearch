@@ -51,6 +51,24 @@ run_experiment({
 - **`timeout_seconds`** — Benchmark timeout. Defaults to 600 seconds.
 - **`checks_timeout_seconds`** — Separate timeout for `.auto/checks.sh`. Defaults to 300 seconds.
 
+## Native continuation and recovery
+
+Autoresearch requests the next iteration through Pi’s abort-aware `agent_before_settle` / `turn_end` boundary (`{ continue: true }`). It does not inject a new “continue” prompt or run a retry timer.
+
+- **Esc / user abort:** pauses, including when pressed during a boundary handler or native retry backoff. The pause is visible and survives reload; resume explicitly with `/autoresearch resume` or `/autoresearch <context>`.
+- **Transient LLM errors:** Pi owns retries and backoff. Autoresearch does not treat each low-level `agent_end` as a reason to start another run.
+- **Exhausted or unrecoverable errors:** pauses instead of launching a new request with a fresh retry budget.
+- **Automatic compaction:** native retry or boundary continuation, with no extra prompt.
+- **Manual `/compact`:** pauses and waits for explicit resume; compaction notifications never launch model requests.
+
+Native retries are configured in Pi’s settings (for example `.pi/settings.json`), **not** `.auto/config.json`:
+
+```json
+{ "retry": { "enabled": true, "maxRetries": 3, "baseDelayMs": 2000 } }
+```
+
+Autoresearch honors those settings and never changes them. Closing the dashboard with Esc is just a UI action, not an agent abort.
+
 ## Loop timing
 
 No configuration is required. Every executed `run_experiment` emits `TIMING start run_experiment <unix_ms>` and `TIMING end run_experiment <unix_ms>`. Correctness checks have separate automatic wall timing.

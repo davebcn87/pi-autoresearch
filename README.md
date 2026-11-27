@@ -188,7 +188,11 @@ The agent infers the goal and metric and calls `init_experiment` immediately, be
 
 ### 2. The loop
 
-The agent runs autonomously: edit → commit → `run_experiment` → `log_experiment` → keep or revert → repeat. It never stops unless interrupted.
+The agent runs autonomously: edit → `run_experiment` → `log_experiment` → auto-commit or revert → repeat. Continuation uses Pi’s native `{ continue: true }` boundary, not timers or injected “continue” messages.
+
+**Esc means pause.** Aborting an active run—including during a continuation boundary or retry backoff—leaves **autoresearch paused** visible and persisted across reloads. It never queues an automatic restart. Resume explicitly with `/autoresearch resume` (or `/autoresearch <context>`). Closing the dashboard with Esc only closes that UI; it does not abort the agent.
+
+**LLM errors use Pi’s native recovery.** Pi handles transient-error retries/backoff, context-overflow recovery and automatic compaction before autoresearch decides whether another iteration is needed. If recovery is exhausted or the error is not recoverable, autoresearch pauses instead of sending a fresh prompt to restart the retry budget. Configure retries through Pi’s `retry` settings, not `.auto/config.json`. A manual `/compact` also leaves the loop paused rather than launching a model request from a notification.
 
 Every result is appended to `.auto/log.jsonl` in your project — one line per run. This means:
 
@@ -251,7 +255,7 @@ After reinitializing a baseline, Progress keeps the current-segment delta and ap
 - **Widget** — full results table, always visible above the editor
 - **`/autoresearch dashboard`** — fullscreen scrollable dashboard overlay (optional chord: `shortcuts.fullscreenDashboard`)
 - **`/autoresearch export`** — open a live browser dashboard with chart and share card
-- **`Escape`** — interrupt anytime and ask for a summary
+- **`Escape`** — abort the active run and persistently pause; `/autoresearch resume` restarts it
 
 ---
 

@@ -72,7 +72,6 @@ export type LoopEvent =
 export type LoopEffect =
   | { readonly type: "abort" }
   | { readonly type: "notify_stop"; readonly reason: string }
-  | { readonly type: "send_resume_message"; readonly turn: number; readonly compacted: boolean }
   | {
       readonly type: "boundary_continue";
       readonly turn: number;
@@ -158,8 +157,8 @@ export function transitionLoop(state: LoopState, event: LoopEvent): LoopTransiti
       return transition({
         ...state,
         phase: "running",
-        experimentsInRun: 0,
-        compactedInRun: false,
+        // A low-level run can be a native retry or queued follow-up, not a
+        // new iteration. Preserve work until the actionable/settled boundary.
         runningExperiment: null,
       });
     }
@@ -221,20 +220,11 @@ export function transitionLoop(state: LoopState, event: LoopEvent): LoopTransiti
         return transition(resetState);
       }
 
-      // Manual /compact (or compaction while idle outside an active run) does
-      // not pass through agent_before_settle, so resume directly.
+      // Manual/idle compaction is not an agent continuation boundary. Never
+      // launch a new run from this notification (it can race Esc). The user
+      // resumes explicitly; automatic in-run compaction uses Pi's boundary.
       if (event.reason === "manual" || (resetState.phase !== "running" && event.isIdle)) {
-        if (event.stopReason !== null) {
-          return transition(
-            { ...resetState, phase: "idle", compactedInRun: false },
-            [{ type: "notify_stop", reason: event.stopReason }],
-          );
-        }
-        const nextTurn = resetState.autoResumeTurns + 1;
-        return transition(
-          { ...resetState, phase: "idle", autoResumeTurns: nextTurn, compactedInRun: false },
-          [{ type: "send_resume_message", turn: nextTurn, compacted: true }],
-        );
+        return transition({ ...resetState, phase: "paused", compactedInRun: false });
       }
 
       // Auto-compaction during a run (threshold or non-retrying overflow):
@@ -304,7 +294,9 @@ export function transitionLoop(state: LoopState, event: LoopEvent): LoopTransiti
       }
 
       if (event.outcome !== "completed") {
-        return transition({ ...base, phase: "idle", experimentsInRun: 0 });
+        // Pi has already exhausted its native retry/recovery before this hook.
+        // An error is not permission to send a new prompt and restart retries.
+        return transition({ ...base, phase: "paused", experimentsInRun: 0 });
       }
 
       // Chat-only turn gate: prevent infinite loops when the agent merely replies.
@@ -342,9 +334,11 @@ export function transitionLoop(state: LoopState, event: LoopEvent): LoopTransiti
       const nextPhase: LoopPhase =
         state.phase === "stopping"
           ? "inactive"
-          : state.phase === "running"
-            ? "idle"
-            : state.phase;
+          : event.aborted && isLoopActive(state)
+            ? "paused"
+            : state.phase === "running"
+              ? "idle"
+              : state.phase;
       return transition({
         ...state,
         phase: nextPhase,

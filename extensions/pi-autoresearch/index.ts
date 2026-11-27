@@ -1181,41 +1181,6 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     ctx.ui.notify(reason ?? `Autoresearch auto-resume limit reached`, "info");
   };
 
-  const composeResumeMessage = (_ctx: ExtensionContext): string => {
-    return [
-      "Run the next iteration now.",
-      "Use the persisted autoresearch state as needed, pick the most promising hypothesis, then call run_experiment + log_experiment.",
-      BENCHMARK_GUARDRAIL,
-    ].join(" ");
-  };
-
-  const composeCompactionResumeMessage = (_ctx: ExtensionContext): string => {
-    // The compaction summary already contains the rules, ideas, and recent
-    // runs — so this resume message just kicks the loop forward.
-    return [
-      "Run the next iteration now.",
-      "Pick the most promising hypothesis from the ideas backlog or the latest `next:` hints in recent runs, then call run_experiment + log_experiment.",
-      "Do not re-read .auto/prompt.md or .auto/log.jsonl — the compaction summary already contains them.",
-      BENCHMARK_GUARDRAIL,
-    ].join(" ");
-  };
-
-  const buildResumeCustomMessage = (
-    ctx: ExtensionContext,
-    turn: number,
-    compacted: boolean,
-  ): {
-    customType: string;
-    content: string;
-    display: boolean;
-    details: AutoresearchResumeDetails;
-  } => ({
-    customType: AUTORESEARCH_RESUME_MESSAGE,
-    content: compacted ? composeCompactionResumeMessage(ctx) : composeResumeMessage(ctx),
-    display: true,
-    details: { turn, compacted },
-  });
-
   // Single state-machine dispatcher: updates runtime.loop, keeps gated tools
   // in lockstep with active/inactive transitions, and executes non-boundary
   // side effects while returning any boundary_continue effect to the caller.
@@ -1237,9 +1202,15 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     const limited = (event.type === "experiment_logged" && event.limitReached) || effects.some((effect) => effect.type === "notify_stop");
     if (limited && hasAutoresearchRules(ctx)) {
       runtime.loop = { ...nextLoop, phase: "paused", runningExperiment: null };
+    }
+    // Esc (including during boundary handlers), exhausted retries, and manual
+    // compaction latch a pause. Notifications must never schedule a new run.
+    const newlyPaused = wasActive && runtime.loop.phase === "paused";
+    if (newlyPaused) {
       runtime.iterationStartedAt = undefined;
       runtime.lastRunTiming = undefined;
-      recordAutoresearchActivation(resolveWorkDir(ctx.cwd), false, true);
+      // Explicit pause records its decision at the command boundary already.
+      if (event.type !== "pause") recordAutoresearchActivation(resolveWorkDir(ctx.cwd), false, true);
     }
 
     const nowActive = isLoopActive(runtime.loop);
@@ -1257,18 +1228,12 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         case "notify_stop":
           notifyAutoResumeLimitReached(ctx, effect.reason);
           break;
-        case "send_resume_message":
-          pi.sendMessage(
-            buildResumeCustomMessage(ctx, effect.turn, effect.compacted),
-            { triggerTurn: true },
-          );
-          break;
         case "boundary_continue":
           boundaryContinue = effect;
           break;
       }
     }
-    if (limited && runtime.loop.phase === "paused") updateWidget(ctx);
+    if (newlyPaused) updateWidget(ctx);
     return boundaryContinue;
   };
 
@@ -1287,13 +1252,12 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         firstKeptEntryId: null,
       });
     }
-    entries.push({
-      type: "custom_message",
-      ...buildResumeCustomMessage(ctx, effect.turn, effect.compacted),
-    });
+    // Pi schedules one context-only continuation and suppresses it on abort.
+    // No synthetic "continue" message, queue, or timer.
     return { entries, continue: true };
   };
 
+  // Render old session history only; new continuations never append messages.
   pi.registerMessageRenderer?.<AutoresearchResumeDetails>(
     AUTORESEARCH_RESUME_MESSAGE,
     (message, { expanded }, theme) => {

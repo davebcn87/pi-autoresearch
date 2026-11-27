@@ -151,7 +151,7 @@ pnpm typecheck 2>&1 | grep -i error || true
 - **Think longer when stuck.** Re-read source files, study the profiling data, reason about what the CPU is actually doing. The best ideas come from deep understanding, not from trying random variations.
 - **Resuming:** if `.auto/prompt.md` exists, read it + git log. If no tool-managed config exists, call `init_experiment` immediately; otherwise preserve it. If only failed runs exist, keep attempting until the first successful run establishes the baseline. Continue looping without erasing earlier failures.
 
-**NEVER STOP.** The user may be away for hours. Keep going until interrupted.
+**NEVER STOP unless interrupted or native recovery is exhausted.** The user may be away for hours. Keep going, but respect Esc/user abort: the extension persistently pauses and requires explicit `/autoresearch resume` or `/autoresearch <context>`. Do not undo that pause, reactivate the loop, or schedule a replacement prompt. Pi owns transient LLM retries/backoff and automatic compaction; do not create an extension/shell retry loop or inject “continue” messages. Unrecoverable/exhausted errors and manual `/compact` leave the session paused.
 
 ## Ideas Backlog
 
