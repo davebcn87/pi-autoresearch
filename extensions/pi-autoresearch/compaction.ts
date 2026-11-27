@@ -12,10 +12,12 @@ import * as path from "node:path";
 
 import {
   reconstructJsonlState,
+  firstSuccessfulRun,
   type ReconstructedJsonlState,
   type ReconstructedRun,
 } from "./jsonl.ts";
 import { sessionFilePath } from "./paths.ts";
+import { timingSummary } from "./timing.ts";
 
 const RECENT_RUN_LIMIT = 50;
 
@@ -112,7 +114,7 @@ function baselineAndBestLines(
   direction: "lower" | "higher",
   unit: string,
 ): string[] {
-  const baseline = runs[0];
+  const baseline = runs.find((run) => run.status === "keep" && Number.isFinite(run.metric));
   if (!baseline) return [];
   const lines = [`Baseline (#${baseline.run}): ${formatMetricWithUnit(baseline.metric, unit)}`];
   const best = bestRun(runs, direction);
@@ -186,15 +188,15 @@ function nextStepSection(): string {
 // Recent runs
 // ---------------------------------------------------------------------------
 
-/** Baseline metric for a run = first run in the same segment across full reconstructed state. */
+/** Failed attempts never establish or compare against a baseline. */
 function baselineFor(run: ReconstructedRun, all: ReconstructedRun[]): number | null {
-  const sameSegment = all.find((other) => other.segment === run.segment);
-  return sameSegment?.metric ?? null;
+  if (run.status === "crash" || run.status === "checks_failed") return null;
+  return firstSuccessfulRun(all, run.segment)?.metric ?? null;
 }
 
 function formatRunLine(run: ReconstructedRun, baseline: number | null): string {
   const head = `#${run.run} ${padStatus(run.status)} ${formatMetric(run.metric)}${formatDelta(run.metric, baseline)}`;
-  const parts = [head, formatDescription(run), ...formatAsiFields(run.asi)];
+  const parts = [head, formatDescription(run), ...(run.timing ? [timingSummary(run.timing)] : []), ...formatAsiFields(run.asi)];
   return parts.filter(Boolean).join(" | ");
 }
 

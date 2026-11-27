@@ -31,11 +31,11 @@ All session files live in a single `.auto/` subfolder at the working directory r
 
 ## Setup
 
-1. Ask (or infer): **Goal**, **Command**, **Metric** (+ direction), **Files in scope**, **Constraints**.
-2. `git checkout -b autoresearch/<goal>-<date>`
-3. Read the source files. Understand the workload deeply before writing anything.
-4. `mkdir -p .auto`, then write `.auto/prompt.md` and `.auto/measure.sh` (see below). Commit both.
-5. `init_experiment` → run baseline → `log_experiment` → start looping immediately.
+1. Ask (or infer) the **Goal** and primary **Metric** (+ unit/direction), then **call `init_experiment` immediately**. This must precede implementation, optimization, lengthy source exploration, or any benchmark attempt. Do not wait until the system works or a baseline exists. Never replace the experiment tools with handwritten logs or shell-only experiment loops; if the tools are missing, report the activation problem rather than silently proceeding.
+2. Infer **Command**, **Files in scope**, and **Constraints**. Create `autoresearch/<goal>-<date>` if needed, preserving existing user work.
+3. Read enough source to define a representative benchmark. Write `.auto/prompt.md`, `.auto/measure.sh`, and required `.auto/checks.sh`; checkpoint the initial state before potentially reverting failed runs. For a from-scratch implementation, keep every build/validation attempt visible in the tool-managed loop while bringing it up.
+4. Call `run_experiment` → `log_experiment` for every attempt, including failures. Log crashes as `crash` and correctness failures as `checks_failed`; neither establishes a baseline. **The first successful run** (benchmark plus all required checks pass, with a measured primary metric) is logged as `keep` and establishes the baseline. Do not fabricate a baseline or reinitialize to hide failed attempts.
+5. Optimize relative to that baseline and continue the tool-managed loop immediately.
 
 ### `.auto/prompt.md`
 
@@ -79,6 +79,9 @@ Bash script (`set -euo pipefail`) that: pre-checks fast (syntax errors in <1s), 
 #### Structured output
 
 - `METRIC name=value` — primary metric (must match `init_experiment`'s `metric_name`) and any secondary metrics. Parsed automatically by `run_experiment`.
+- **Optional timing:** emit `TIMING start build` / `TIMING end build`, and similarly for `benchmark`, `load`, etc. Names use letters/digits/`_.:/-`, up to 80 characters; nested/repeated spans work. An optional final Unix timestamp in **milliseconds** avoids stdout-buffering artifacts. Otherwise receipt time is used; flush output for precision. Incomplete/invalid spans are advisory, not benchmark failures. Do not use reserved names `run_experiment`, `checks`, or `agent/other`. The tool always emits its own `run_experiment` start/end timing; instrument only useful subdivisions inside the benchmark command.
+- Full-loop time, command/check wall time, and the longest measured exclusive step are saved automatically by `log_experiment` and shown in the dashboard. `agent/other` is unattributed wall time (reasoning, editing, other tools, etc.), not a measurement of inference alone. Use this feedback to reduce iteration overhead as well as optimize the target. Timing is optional; never delay initialization or baseline measurement to add it.
+- Reinitializing a baseline preserves a dimmed comparison against the first successful baseline with the same metric name/unit/direction. Retain earlier attempts; do not reset history to improve reported progress.
 
 #### Design the script to inform optimization
 
@@ -146,7 +149,7 @@ pnpm typecheck 2>&1 | grep -i error || true
 - **Don't thrash.** Repeatedly reverting the same idea? Try something structurally different.
 - **Crashes:** fix if trivial, otherwise log and move on. Don't over-invest.
 - **Think longer when stuck.** Re-read source files, study the profiling data, reason about what the CPU is actually doing. The best ideas come from deep understanding, not from trying random variations.
-- **Resuming:** if `.auto/prompt.md` exists, read it + git log, continue looping.
+- **Resuming:** if `.auto/prompt.md` exists, read it + git log. If no tool-managed config exists, call `init_experiment` immediately; otherwise preserve it. If only failed runs exist, keep attempting until the first successful run establishes the baseline. Continue looping without erasing earlier failures.
 
 **NEVER STOP.** The user may be away for hours. Keep going until interrupted.
 

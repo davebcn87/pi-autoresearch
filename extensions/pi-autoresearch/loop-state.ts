@@ -6,7 +6,7 @@
  * is deterministic and exhaustively testable.
  */
 
-export type LoopPhase = "inactive" | "idle" | "running" | "stopping";
+export type LoopPhase = "inactive" | "idle" | "running" | "paused" | "stopping";
 
 export interface RunningExperimentInfo {
   readonly startedAt: number;
@@ -32,16 +32,18 @@ export interface LoopState {
   readonly runningExperiment: RunningExperimentInfo | null;
   readonly lastRunChecks: LastRunChecks | null;
   readonly lastRunDuration: number | null;
+  readonly lastRunPassed: boolean | null;
 }
 
 export type LoopEvent =
   | { readonly type: "session_restored"; readonly active: boolean }
   | { readonly type: "activate"; readonly inActiveRun?: boolean; readonly resetTurns?: boolean }
   | { readonly type: "deactivate"; readonly inActiveRun?: boolean }
+  | { readonly type: "pause"; readonly inActiveRun?: boolean }
   | { readonly type: "segment_reset" }
   | { readonly type: "agent_start" }
   | { readonly type: "experiment_started"; readonly startedAt: number; readonly command: string }
-  | { readonly type: "experiment_finished"; readonly durationSeconds: number; readonly checks: LastRunChecks | null }
+  | { readonly type: "experiment_finished"; readonly durationSeconds: number; readonly checks: LastRunChecks | null; readonly benchmarkPassed?: boolean }
   | { readonly type: "experiment_aborted" }
   | { readonly type: "experiment_logged"; readonly limitReached: boolean }
   | {
@@ -95,6 +97,7 @@ export function createLoopState(): LoopState {
     runningExperiment: null,
     lastRunChecks: null,
     lastRunDuration: null,
+    lastRunPassed: null,
   };
 }
 
@@ -128,6 +131,12 @@ export function transitionLoop(state: LoopState, event: LoopEvent): LoopTransiti
       });
     }
 
+    case "pause":
+      return transition(
+        { ...clearedState("paused"), autoResumeTurns: state.autoResumeTurns },
+        event.inActiveRun || state.phase === "running" ? [{ type: "abort" }] : NO_EFFECTS,
+      );
+
     case "deactivate": {
       const shouldAbort = event.inActiveRun === true || state.phase === "running";
       const nextPhase: LoopPhase = shouldAbort ? "stopping" : "inactive";
@@ -159,6 +168,9 @@ export function transitionLoop(state: LoopState, event: LoopEvent): LoopTransiti
       return transition({
         ...state,
         runningExperiment: { startedAt: event.startedAt, command: event.command },
+        lastRunPassed: null,
+        lastRunChecks: null,
+        lastRunDuration: null,
       });
 
     case "experiment_finished":
@@ -167,6 +179,7 @@ export function transitionLoop(state: LoopState, event: LoopEvent): LoopTransiti
         runningExperiment: null,
         lastRunDuration: event.durationSeconds,
         lastRunChecks: event.checks,
+        lastRunPassed: event.benchmarkPassed ?? null,
       });
 
     case "experiment_aborted":
@@ -176,6 +189,7 @@ export function transitionLoop(state: LoopState, event: LoopEvent): LoopTransiti
       });
 
     case "experiment_logged": {
+      if (state.phase === "paused") return transition(state);
       if (event.limitReached) {
         return transition(clearedState("stopping"), [{ type: "abort" }]);
       }

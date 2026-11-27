@@ -13,7 +13,7 @@ const completedValues = (prefix) => getAutoresearchArgumentCompletions(prefix)?.
 
 test("an empty prefix offers every subcommand with its description", () => {
   const items = getAutoresearchArgumentCompletions("");
-  assert.deepEqual(items.map((item) => item.value), ["off", "finalize", "clear", "export", "dashboard", "help"]);
+  assert.deepEqual(items.map((item) => item.value), ["off", "pause", "resume", "finalize", "clear", "export", "dashboard", "help"]);
   for (const item of items) {
     assert.equal(item.label, item.value);
     assert.ok(item.description.length > 0, `${item.value} has a description`);

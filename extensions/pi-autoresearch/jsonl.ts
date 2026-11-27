@@ -1,3 +1,5 @@
+import { parseTiming, type ExperimentTiming } from "./timing.ts";
+
 export type JsonlEntry = Record<string, unknown>;
 
 export interface AutoresearchConfigEntry extends JsonlEntry {
@@ -28,6 +30,10 @@ export interface ReconstructedRun {
   segment: number;
   confidence: number | null;
   asi?: Record<string, unknown>;
+  timing?: ExperimentTiming;
+  metricName?: string;
+  metricUnit?: string;
+  direction?: "lower" | "higher";
 }
 
 export interface ReconstructedJsonlState {
@@ -38,6 +44,22 @@ export interface ReconstructedJsonlState {
   currentSegment: number;
   results: ReconstructedRun[];
   secondaryMetrics: ReconstructedMetricDef[];
+}
+
+/** The first kept, finite measurement is the baseline; failures never are. */
+export function firstSuccessfulRun<T extends { segment: number; status: string; metric: number }>(
+  runs: readonly T[],
+  segment: number,
+): T | undefined {
+  return runs.find((run) => run.segment === segment && run.status === "keep" && Number.isFinite(run.metric));
+}
+
+/** Compare resets only when metric identity, unit and direction still agree. */
+export function firstComparableBaseline<T extends { status: string; metric: number; segment: number; metricName?: string; metricUnit?: string; direction?: string }>(
+  runs: readonly T[], metricName: string, metricUnit: string, direction: string,
+): T | undefined {
+  return runs.find((run) => run.status === "keep" && Number.isFinite(run.metric) &&
+    run.metricName === metricName && run.metricUnit === metricUnit && run.direction === direction);
 }
 
 const DEFAULT_METRIC_NAME = "metric";
@@ -123,6 +145,7 @@ function runFrom(entry: AutoresearchRunEntry, segment: number): ReconstructedRun
     segment,
     confidence: typeof entry.confidence === "number" ? entry.confidence : null,
     asi: asiFrom(entry.asi),
+    timing: parseTiming(entry.timing),
   };
 }
 
@@ -184,6 +207,9 @@ export function reconstructJsonlState(jsonlContent: string): ReconstructedJsonlS
     if (!isAutoresearchRunEntry(entry)) continue;
 
     const run = runFrom(entry, segment);
+    run.metricName = state.metricName;
+    run.metricUnit = state.metricUnit;
+    run.direction = state.bestDirection;
     state.results.push(run);
     registerSecondaryMetrics(state, run.metrics);
   }

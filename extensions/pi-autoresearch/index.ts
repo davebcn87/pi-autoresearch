@@ -49,7 +49,10 @@ import {
   isAutoresearchRunEntry,
   extractAutoresearchSessionName,
   reconstructJsonlState,
+  firstSuccessfulRun,
+  firstComparableBaseline,
 } from "./jsonl.ts";
+import { TimingCollector, summarizeTiming, timingSummary, formatDuration, type ExperimentTiming } from "./timing.ts";
 import {
   autoresearchSummaryPathsFor,
   buildAutoresearchCompactionSummary,
@@ -98,6 +101,10 @@ interface ExperimentResult {
   confidence: number | null;
   /** Actionable Side Information — structured diagnostics for this run */
   asi?: ASI;
+  timing?: ExperimentTiming;
+  metricName?: string;
+  metricUnit?: string;
+  direction?: "lower" | "higher";
 }
 
 interface MetricDef {
@@ -180,7 +187,7 @@ interface RunDetails {
   /** Name of the primary metric (for display) */
   metricName: string;
   metricUnit: string;
-
+  timing?: ExperimentTiming;
 }
 
 interface LogDetails {
@@ -192,6 +199,8 @@ interface LogDetails {
 interface AutoresearchRuntime {
   loop: LoopState;
   state: ExperimentState;
+  iterationStartedAt?: number;
+  lastRunTiming?: ExperimentTiming;
 }
 
 const AUTORESEARCH_RESUME_MESSAGE = "pi-autoresearch.resume";
@@ -459,7 +468,7 @@ function computeConfidence(
   segment: number,
   direction: "lower" | "higher"
 ): number | null {
-  const cur = currentResults(results, segment).filter((r) => r.metric > 0);
+  const cur = currentResults(results, segment).filter((r) => (r.status === "keep" || r.status === "discard") && r.metric > 0);
   if (cur.length < 3) return null;
 
   const values = cur.map((r) => r.metric);
@@ -556,19 +565,20 @@ interface AutoresearchActivationEntryData {
   version?: number;
   workDir?: string;
   active?: boolean;
+  paused?: boolean;
 }
 
 export function shouldAutoActivateAutoresearch(
   ctxCwd: string,
   workDir: string,
-  hasPersistedLog: boolean,
+  hasSessionFiles: boolean,
   recordedDecision: boolean | null = null,
 ): boolean {
-  if (!hasPersistedLog) return false;
+  if (!hasSessionFiles) return false;
   // An explicit `/autoresearch on|off` in this session always wins, so a manual
   // off survives /tree, compaction, and reloads instead of snapping back on.
   if (recordedDecision !== null) return recordedDecision;
-  // With no recorded decision, same-cwd sessions default on (a log implies intent);
+  // With no recorded decision, same-cwd sessions default on (session files imply intent);
   // redirected workingDir sessions default off until this session opts in.
   return samePath(ctxCwd, workDir);
 }
@@ -618,10 +628,9 @@ function validateWorkDir(ctxCwd: string): string | null {
   return null;
 }
 
-/** Baseline = first experiment in current segment */
+/** Baseline = first successful (kept) measurement in the current segment. */
 function findBaselineMetric(results: ExperimentResult[], segment: number): number | null {
-  const cur = currentResults(results, segment);
-  return cur.length > 0 ? cur[0].metric : null;
+  return firstSuccessfulRun(results, segment)?.metric ?? null;
 }
 
 /** Best = optimal metric across kept experiments in current segment (min for lower, max for higher) */
@@ -649,12 +658,12 @@ const autoresearchScriptPath = (dir: string) => sessionFilePath(dir, "measure");
 const autoresearchConfigPath = (dir: string) => sessionFilePath(dir, "config");
 
 function findBaselineRunNumber(results: ExperimentResult[], segment: number): number | null {
-  const index = results.findIndex((result) => result.segment === segment);
+  const index = results.indexOf(firstSuccessfulRun(results, segment)!);
   return index >= 0 ? index + 1 : null;
 }
 
 /**
- * Find secondary metric baselines from the first experiment in current segment.
+ * Find secondary metric baselines from the first successful experiment in current segment.
  * For metrics that didn't exist at baseline time, falls back to the first
  * occurrence of that metric in the current segment.
  */
@@ -663,10 +672,9 @@ function findBaselineSecondary(
   segment: number,
   knownMetrics?: MetricDef[]
 ): Record<string, number> {
-  const cur = currentResults(results, segment);
-  const base: Record<string, number> = cur.length > 0
-    ? { ...(cur[0].metrics ?? {}) }
-    : {};
+  const cur = currentResults(results, segment).filter((r) => r.status === "keep" || r.status === "discard");
+  const baseline = firstSuccessfulRun(cur, segment);
+  const base: Record<string, number> = { ...baseline?.metrics };
 
   // Fill in any known metrics missing from baseline with their first occurrence
   if (knownMetrics) {
@@ -887,6 +895,11 @@ function renderDashboardLines(
       progressLine += th.fg(color, ` (${sign}${pct.toFixed(1)}%)`);
     }
 
+    const original = firstComparableBaseline(st.results, st.metricName, st.metricUnit, st.bestDirection);
+    if (original && original.segment !== st.currentSegment && original.metric !== 0) {
+      const pct = ((bestPrimary - original.metric) / Math.abs(original.metric)) * 100;
+      progressLine += th.fg("dim", ` (${pct >= 0 ? "+" : ""}${pct.toFixed(1)}% from first baseline)`);
+    }
     lines.push(truncateToWidth(progressLine, width));
 
     // Progress secondary metrics — wrap into lines that fit width, indented
@@ -934,6 +947,8 @@ function renderDashboardLines(
     }
   }
 
+  const latestTiming = cur.at(-1)?.timing;
+  if (latestTiming) lines.push(truncateToWidth(`  ${th.fg("muted", timingSummary(latestTiming))}`, width));
   lines.push("");
 
   // Determine visible rows once — used for both column sizing and rendering
@@ -1024,7 +1039,7 @@ function renderDashboardLines(
     );
   }
 
-  const baselineIndex = st.results.findIndex((x) => x.segment === st.currentSegment);
+  const baselineIndex = st.results.indexOf(firstSuccessfulRun(st.results, st.currentSegment)!);
 
   for (let i = startIdx; i < st.results.length; i++) {
     const r = st.results[i];
@@ -1153,11 +1168,12 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       state: runtime.state,
     });
 
-  const recordAutoresearchActivation = (workDir: string, active: boolean): void => {
+  const recordAutoresearchActivation = (workDir: string, active: boolean, paused = false): void => {
     pi.appendEntry(AUTORESEARCH_ACTIVATION_ENTRY, {
       version: 1,
       workDir: canonicalPath(workDir),
       active,
+      paused,
     });
   };
 
@@ -1210,10 +1226,24 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   ): Extract<LoopEffect, { type: "boundary_continue" }> | null => {
     const runtime = getRuntime(ctx);
     const wasActive = isLoopActive(runtime.loop);
+    if (event.type === "pause" || event.type === "deactivate" || event.type === "session_restored") {
+      runtime.iterationStartedAt = undefined;
+      runtime.lastRunTiming = undefined;
+    }
     const { state: nextLoop, effects } = transitionLoop(runtime.loop, event);
     runtime.loop = nextLoop;
+    // Automatic safety/iteration limits must not leave a playbook-backed loop
+    // silently inactive. Persist the same visible pause as a user pause.
+    const limited = (event.type === "experiment_logged" && event.limitReached) || effects.some((effect) => effect.type === "notify_stop");
+    if (limited && hasAutoresearchRules(ctx)) {
+      runtime.loop = { ...nextLoop, phase: "paused", runningExperiment: null };
+      runtime.iterationStartedAt = undefined;
+      runtime.lastRunTiming = undefined;
+      recordAutoresearchActivation(resolveWorkDir(ctx.cwd), false, true);
+    }
 
-    const nowActive = isLoopActive(nextLoop);
+    const nowActive = isLoopActive(runtime.loop);
+    if (nowActive && runtime.iterationStartedAt === undefined) runtime.iterationStartedAt = Date.now();
     if (options?.forceSyncTools || wasActive !== nowActive) {
       syncGatedTools(nowActive);
     }
@@ -1238,6 +1268,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
           break;
       }
     }
+    if (limited && runtime.loop.phase === "paused") updateWidget(ctx);
     return boundaryContinue;
   };
 
@@ -1366,6 +1397,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     clearOverlay();
     if (ctx.hasUI) {
       ctx.ui.setWidget("autoresearch", undefined);
+      ctx.ui.setStatus?.("autoresearch", undefined);
     }
   };
 
@@ -1440,17 +1472,21 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     // Read max experiments and optional compaction cadence from config file
     refreshConfigLimits(ctx.cwd, state);
 
-    // Auto-enter autoresearch mode only when a persisted experiment log exists.
-    // A recorded `/autoresearch on|off` in this session wins; otherwise same-cwd
-    // sessions default on and redirected workingDir sessions default off, so
-    // unrelated chats launched from a shared cwd never activate it.
+    // A playbook already establishes intent, even before the first tool-managed
+    // log exists. Manual off and redirected-workingDir isolation still win.
     const shouldActivate = shouldAutoActivateAutoresearch(
       ctx.cwd,
       workDir,
-      hasPersistedLog,
+      hasPersistedLog || hasAutoresearchRules(ctx),
       recordedActivationDecision(ctx, workDir),
     );
     dispatchLoop(ctx, { type: "session_restored", active: shouldActivate }, { forceSyncTools: true });
+    const lastActivation = ctx.sessionManager.getBranch()
+      .filter((entry): entry is CustomEntry => entry.type === "custom")
+      .map(autoresearchActivationData)
+      .filter((data) => data && samePath(data.workDir!, workDir)).at(-1);
+    if (!shouldActivate && lastActivation?.paused && (hasPersistedLog || hasAutoresearchRules(ctx))) dispatchLoop(ctx, { type: "pause" });
+    if (hasPersistedLog || hasAutoresearchRules(ctx)) sessionsWithFiles.add(getSessionKey(ctx));
 
     updateWidget(ctx);
   };
@@ -1461,6 +1497,12 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     const runtime = getRuntime(ctx);
     const state = runtime.state;
 
+    if (runtime.loop.phase === "paused") {
+      ctx.ui.setWidget("autoresearch", ["🔬 autoresearch paused — /autoresearch resume to continue"]);
+      ctx.ui.setStatus?.("autoresearch", "autoresearch paused");
+      return;
+    }
+    ctx.ui.setStatus?.("autoresearch", undefined);
     if (!isAutoresearchActive(runtime)) {
       ctx.ui.setWidget("autoresearch", undefined);
       return;
@@ -1468,7 +1510,9 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
     if (state.results.length === 0) {
       if (!runtime.loop.runningExperiment) {
-        ctx.ui.setWidget("autoresearch", undefined);
+        ctx.ui.setWidget("autoresearch", [runtime.state.name
+          ? `🔬 autoresearch: ${runtime.state.name} — awaiting first successful baseline`
+          : "🔬 autoresearch active — initialize the experiment now with init_experiment"]);
         return;
       }
 
@@ -1525,6 +1569,54 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       }));
   };
 
+  // Skill commands expand after `input`. Enter mode before expansion so the
+  // first model request can actually call the tools named by the create skill.
+  const isCreateSkillRequest = (text: string): boolean =>
+    /^\/(?:skill:)?autoresearch-create(?:\s|$)/.test(text.trim());
+
+  const activateFromCreateSkill = (ctx: ExtensionContext): void => {
+    const runtime = getRuntime(ctx);
+    if (isAutoresearchActive(runtime) || runtime.loop.phase === "stopping") return;
+    recordAutoresearchActivation(resolveWorkDir(ctx.cwd), true);
+    dispatchLoop(ctx, { type: "activate", inActiveRun: !ctx.isIdle(), resetTurns: true });
+    updateWidget(ctx);
+    ctx.ui.notify("Autoresearch mode ON — create skill activated experiment tools", "info");
+  };
+
+  // Session files can appear after startup (e.g. the create skill writes them).
+  // Reconcile at request/turn boundaries instead of waiting for /reload. Never
+  // revive a stopping loop, a manual off, or another session's redirected work.
+  const sessionsWithFiles = new Set<string>();
+  const recoverModeFromSessionFiles = (ctx: ExtensionContext): boolean => {
+    const runtime = getRuntime(ctx);
+    const workDir = resolveWorkDir(ctx.cwd);
+    const hasFiles = fs.existsSync(autoresearchJsonlPath(workDir)) || hasAutoresearchRules(ctx);
+    const key = getSessionKey(ctx);
+    if (hasFiles) sessionsWithFiles.add(key);
+    else if (sessionsWithFiles.delete(key)) {
+      // Deleting .auto is an explicit stop, including from a paused session.
+      dispatchLoop(ctx, { type: "deactivate", inActiveRun: false }, { forceSyncTools: true });
+      updateWidget(ctx);
+      return false;
+    }
+    if (runtime.loop.phase !== "inactive") return false;
+    if (!shouldAutoActivateAutoresearch(
+      ctx.cwd,
+      workDir,
+      fs.existsSync(autoresearchJsonlPath(workDir)) || hasAutoresearchRules(ctx),
+      recordedActivationDecision(ctx, workDir),
+    )) return false;
+    reconstructState(ctx);
+    dispatchLoop(ctx, { type: "activate", inActiveRun: !ctx.isIdle() });
+    recordAutoresearchActivation(workDir, true);
+    ctx.ui.notify("Autoresearch mode ON — recovered from session files", "info");
+    return true;
+  };
+
+  pi.on("input", async (event, ctx) => {
+    if (isCreateSkillRequest(event.text)) activateFromCreateSkill(ctx);
+  });
+
   pi.on("session_start", async (_e, ctx) => reconstructState(ctx));
   pi.on("session_tree", async (_e, ctx) => reconstructState(ctx));
   pi.on("session_before_switch", async () => {
@@ -1533,6 +1625,8 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   pi.on("session_shutdown", async (_e, ctx) => {
     clearSessionUi(ctx);
     runtimeStore.clear(getSessionKey(ctx));
+    sessionsWithFiles.delete(getSessionKey(ctx));
+    ctx.ui.setStatus?.("autoresearch", undefined);
     stopDashboardServer();
   });
 
@@ -1560,6 +1654,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   });
 
   pi.on("turn_end", async (event, ctx) => {
+    const recovered = event.outcome === "completed" && recoverModeFromSessionFiles(ctx);
     const runtime = getRuntime(ctx);
     refreshConfigLimits(ctx.cwd, runtime.state);
     const cont = dispatchLoop(ctx, {
@@ -1568,7 +1663,21 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       compactEvery: runtime.state.compactEvery,
       stopReason: currentStopReason(runtime),
     });
-    return cont ? buildBoundaryContinuation(ctx, event.entries, cont) : undefined;
+    if (cont) return buildBoundaryContinuation(ctx, event.entries, cont);
+    if (recovered && !currentStopReason(runtime)) {
+      // One repair turn, not a fake logged experiment. The normal chat-only
+      // guard remains in charge of every subsequent continuation.
+      return {
+        entries: [...event.entries, {
+          type: "custom_message" as const,
+          customType: "pi-autoresearch.activation",
+          content: "Autoresearch mode is now active; init_experiment, run_experiment and log_experiment are available. Use these tools, not manual shell/log substitutes. If no tool-managed config exists, call init_experiment and measure a fresh baseline. Preserve existing work and history; do not invent historical tool runs.",
+          display: true,
+        }],
+        continue: true,
+      };
+    }
+    return undefined;
   });
 
   pi.on("agent_end", async (_event, ctx) => {
@@ -1599,6 +1708,11 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   // forcing a full systemPrompt override — Pi diffs sections mid-conversation
   // so toggling checks/ideas or autoresearch mode preserves the prompt cache.
   pi.on("before_agent_start", async (event, ctx) => {
+    // Also handle callers that already expanded the skill before delivery.
+    if (isCreateSkillRequest(event.prompt ?? "") || /^<skill\s+name=["']autoresearch-create["'](?:\s|>)/.test((event.prompt ?? "").trim())) {
+      activateFromCreateSkill(ctx);
+    }
+    recoverModeFromSessionFiles(ctx);
     const runtime = getRuntime(ctx);
     const sections = event.systemPromptOptions?.sections;
 
@@ -1620,7 +1734,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     let extra =
       "## Autoresearch Mode (ACTIVE)" +
       "\nYou are in autoresearch mode. Optimize the primary metric through an autonomous experiment loop." +
-      "\nUse init_experiment, run_experiment, and log_experiment tools. NEVER STOP until interrupted." +
+      "\nCall init_experiment as soon as the objective and metric are known, before implementation or optimization. Do not wait for a working benchmark. Then use run_experiment and log_experiment for every attempt; the first successful run (benchmark and required checks pass) is kept as the baseline. Failed attempts are logged but never establish the baseline. NEVER STOP until interrupted." +
       `\nExperiment rules: ${mdPath} — read this file at the start of every session and after compaction.` +
       "\nWrite promising but deferred optimizations as bullet points to .auto/ideas.md — don't let good ideas get lost." +
       `\n${BENCHMARK_GUARDRAIL}` +
@@ -1870,6 +1984,14 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       if (overlayTui) overlayTui.requestRender();
 
       const t0 = Date.now();
+      const collector = new TimingCollector(t0);
+      const iterationStartedAt = runtime.iterationStartedAt;
+      const canRecordTiming = () => isAutoresearchActive(runtime) && runtime.iterationStartedAt === iterationStartedAt;
+      let runTiming: ExperimentTiming;
+      let runEndedAt = t0;
+      runtime.lastRunTiming = undefined;
+      const automaticStart = `TIMING start run_experiment ${t0}`;
+      onUpdate?.({ content: [{ type: "text", text: automaticStart }], details: {} });
 
       // Spawn the process directly (like the bash tool) for streaming output
       const getTempFile = createTempFileAllocator();
@@ -1969,8 +2091,8 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
           chunksGeneration++;
         };
 
-        if (child.stdout) child.stdout.on("data", handleData);
-        if (child.stderr) child.stderr.on("data", handleData);
+        if (child.stdout) child.stdout.on("data", (data: Buffer) => { collector.feed(data, "stdout"); handleData(data); });
+        if (child.stderr) child.stderr.on("data", (data: Buffer) => { collector.feed(data, "stderr"); handleData(data); });
 
         // Timeout
         let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
@@ -2030,12 +2152,18 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
           });
         });
       }).finally(() => {
+        runEndedAt = Date.now();
+        const spans = collector.finish(runEndedAt);
+        spans.push({ name: "run_experiment", startedAt: t0, endedAt: runEndedAt, source: "automatic" });
+        runTiming = { ...summarizeTiming(spans), warnings: [...collector.warnings] };
+        if (canRecordTiming()) runtime.lastRunTiming = runTiming;
+        onUpdate?.({ content: [{ type: "text", text: `${automaticStart}\nTIMING end run_experiment ${runEndedAt}` }], details: { timing: runTiming } });
         dispatchLoop(ctx, { type: "experiment_aborted" });
         updateWidget(ctx);
         if (overlayTui) overlayTui.requestRender();
       });
 
-      const durationSeconds = (Date.now() - t0) / 1000;
+      const durationSeconds = (runEndedAt - t0) / 1000;
       const benchmarkPassed = exitCode === 0 && !timedOut;
 
       // Run backpressure checks if benchmark passed and checks file exists
@@ -2063,12 +2191,16 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
           checksPass = false;
           checksOutput = e instanceof Error ? e.message : String(e);
         }
+        runTiming!.spans.push({ name: "checks", startedAt: ct0, endedAt: Date.now(), source: "automatic" });
       }
+      runTiming = { ...summarizeTiming(runTiming!.spans), warnings: [...collector.warnings] };
+      if (canRecordTiming()) runtime.lastRunTiming = runTiming;
 
       // Store run timing & checks result for log_experiment gate
       dispatchLoop(ctx, {
         type: "experiment_finished",
         durationSeconds,
+        benchmarkPassed,
         checks: checksPass !== null ? { pass: checksPass, output: checksOutput, duration: checksDuration } : null,
       });
 
@@ -2117,6 +2249,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         parsedPrimary,
         metricName: state.metricName,
         metricUnit: state.metricUnit,
+        timing: runTiming,
       };
 
       // Build LLM response
@@ -2140,8 +2273,12 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         }
       }
 
-      if (state.bestMetric !== null) {
-        text += `📊 Current best ${state.metricName}: ${formatNum(state.bestMetric, state.metricUnit)}\n`;
+      text += `${automaticStart}\nTIMING end run_experiment ${runEndedAt}\n`;
+      text += `⏱ ${timingSummary(runTiming)}\n`;
+      if (collector.warnings.length) text += `Timing notes: ${collector.warnings.join("; ")}\n`;
+      const bestKept = findBestMetric(state.results, state.currentSegment, state.bestDirection);
+      if (bestKept !== null) {
+        text += `📊 Current best ${state.metricName}: ${formatNum(bestKept, state.metricUnit)}\n`;
       }
 
       // Show parsed METRIC lines to the LLM
@@ -2255,7 +2392,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       };
 
       if (d.timedOut) {
-        let text = theme.fg("error", `⏰ TIMEOUT ${d.durationSeconds.toFixed(1)}s`);
+        let text = theme.fg("error", `⏰ TIMEOUT ${formatDuration(d.durationSeconds)}`);
         text = appendOutput(text, d.tailOutput);
         return toText(text);
       }
@@ -2267,24 +2404,24 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
       if (d.checksTimedOut) {
         let text =
-          theme.fg("success", `✅ wall: ${d.durationSeconds.toFixed(1)}s`) +
+          theme.fg("success", `✅ wall: ${formatDuration(d.durationSeconds)}`) +
           parsedSuffix +
-          theme.fg("error", ` ⏰ checks timeout ${d.checksDuration.toFixed(1)}s`);
+          theme.fg("error", ` ⏰ checks timeout ${formatDuration(d.checksDuration)}`);
         text = appendOutput(text, d.checksOutput);
         return toText(text);
       }
 
       if (d.checksPass === false) {
         let text =
-          theme.fg("success", `✅ wall: ${d.durationSeconds.toFixed(1)}s`) +
+          theme.fg("success", `✅ wall: ${formatDuration(d.durationSeconds)}`) +
           parsedSuffix +
-          theme.fg("error", ` 💥 checks failed ${d.checksDuration.toFixed(1)}s`);
+          theme.fg("error", ` 💥 checks failed ${formatDuration(d.checksDuration)}`);
         text = appendOutput(text, d.checksOutput);
         return toText(text);
       }
 
       if (d.crashed) {
-        let text = theme.fg("error", `💥 FAIL exit=${d.exitCode} ${d.durationSeconds.toFixed(1)}s`) + parsedSuffix;
+        let text = theme.fg("error", `💥 FAIL exit=${d.exitCode} ${formatDuration(d.durationSeconds)}`) + parsedSuffix;
         text = appendOutput(text, d.tailOutput);
         return toText(text);
       }
@@ -2292,20 +2429,21 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       let text = theme.fg("success", "✅ ");
 
       // Show wall-clock and parsed primary metric together
-      const parts: string[] = [`wall: ${d.durationSeconds.toFixed(1)}s`];
+      const parts: string[] = [`wall: ${formatDuration(d.durationSeconds)}`];
       if (d.parsedPrimary !== null) {
         parts.push(`${d.metricName}: ${formatNum(d.parsedPrimary, d.metricUnit)}`);
       }
       text += theme.fg("accent", parts.join(", "));
 
       if (d.checksPass === true) {
-        text += theme.fg("success", ` ✓ checks ${d.checksDuration.toFixed(1)}s`);
+        text += theme.fg("success", ` ✓ checks ${formatDuration(d.checksDuration)}`);
       }
 
       if (d.truncation?.truncated && d.fullOutputPath) {
         text += theme.fg("warning", " (truncated)");
       }
 
+      if (d.timing) text += "\n" + theme.fg("muted", timingSummary(d.timing));
       text = appendOutput(text, d.tailOutput);
 
       if (expanded && d.truncation?.truncated && d.fullOutputPath) {
@@ -2365,6 +2503,13 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       const secondaryMetrics = (params.metrics ?? {}) as Record<string, number>;
       const status = params.status as ExperimentResult["status"];
 
+      if (status === "keep" && runtime.loop.lastRunPassed === false) {
+        return {
+          content: [{ type: "text", text: "❌ Cannot keep — the benchmark failed or timed out. Log as 'crash'; failed attempts cannot establish the baseline." }],
+          details: {},
+        };
+      }
+
       // Gate: prevent "keep" when last run's checks failed
       if (status === "keep" && runtime.loop.lastRunChecks && !runtime.loop.lastRunChecks.pass) {
         return {
@@ -2411,6 +2556,15 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         ? params.asi as ASI
         : undefined;
 
+      // Cycle boundaries are log-entry to log-entry: the previous log's git/hooks,
+      // agent reasoning, editing/other tools, benchmark and checks are all covered.
+      const loopEndedAt = Date.now();
+      const timing = runtime.lastRunTiming ? {
+        ...summarizeTiming(runtime.lastRunTiming.spans, runtime.iterationStartedAt, loopEndedAt),
+        warnings: runtime.lastRunTiming.warnings,
+      } : undefined;
+      runtime.iterationStartedAt = loopEndedAt;
+      runtime.lastRunTiming = undefined;
       const experiment: ExperimentResult = {
         commit: params.commit.slice(0, 7),
         metric: params.metric,
@@ -2421,6 +2575,10 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         segment: state.currentSegment,
         confidence: null,
         asi: mergedASI,
+        timing,
+        metricName: state.metricName,
+        metricUnit: state.metricUnit,
+        direction: state.bestDirection,
       };
 
       state.results.push(experiment);
@@ -2438,7 +2596,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         }
       }
 
-      // Baseline = first run in current segment
+      // Baseline = first successful kept run in current segment
       state.bestMetric = findBaselineMetric(state.results, state.currentSegment);
 
       // Compute confidence score (best improvement as multiple of noise floor)
@@ -2457,6 +2615,13 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
           const sign = delta > 0 ? "+" : "";
           text += ` | this: ${formatNum(params.metric, state.metricUnit)} (${sign}${pct}%)`;
         }
+      }
+
+      if (timing) text += `\n⏱ ${timingSummary(timing)}`;
+      const original = firstComparableBaseline(state.results, state.metricName, state.metricUnit, state.bestDirection);
+      if (original && original.segment !== state.currentSegment && original.metric !== 0 && status === "keep") {
+        const pct = (params.metric - original.metric) / Math.abs(original.metric) * 100;
+        text += `\nOverall: ${pct >= 0 ? "+" : ""}${pct.toFixed(1)}% from first baseline`;
       }
 
       // Show secondary metrics
@@ -2673,7 +2838,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       // Show wall-clock and primary metric together
       const metricParts: string[] = [];
       if (d.wallClockSeconds !== null && d.wallClockSeconds !== undefined) {
-        metricParts.push(`wall: ${d.wallClockSeconds.toFixed(1)}s`);
+        metricParts.push(`wall: ${formatDuration(d.wallClockSeconds)}`);
       }
       if (exp.metric > 0) {
         metricParts.push(`${s.metricName}: ${formatNum(exp.metric, s.metricUnit)}`);
@@ -2707,6 +2872,8 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         }
         text += theme.fg("dim", `  ${parts.join(" ")}`);
       }
+
+      if (exp.timing) text += "\n" + theme.fg("muted", timingSummary(exp.timing));
 
       const revisitsRun = exp.asi?.revisits_run;
       if (typeof revisitsRun === "number" && Number.isInteger(revisitsRun) && revisitsRun > 0) {
@@ -3151,7 +3318,18 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     clearSessionUi(ctx);
   }
 
+  function pauseAutoresearch(ctx: ExtensionContext): void {
+    recordAutoresearchActivation(resolveWorkDir(ctx.cwd), false, true);
+    dispatchLoop(ctx, { type: "pause", inActiveRun: !ctx.isIdle() }, { forceSyncTools: true });
+    updateWidget(ctx);
+    ctx.ui.notify("Autoresearch paused — resume with '/autoresearch resume'; stop with finalize or delete .auto", "info");
+  }
+
   function turnAutoresearchOff(ctx: ExtensionContext): void {
+    if (hasAutoresearchRules(ctx)) {
+      pauseAutoresearch(ctx);
+      return;
+    }
     const wasRunning = !ctx.isIdle();
     stopAutoresearchLoop(ctx);
     ctx.ui.notify(
@@ -3163,11 +3341,15 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   const FINALIZE_KICKOFF = "/skill:autoresearch-finalize";
 
   async function finalizeAutoresearch(ctx: ExtensionCommandContext): Promise<void> {
+    if (!hasLoggedExperiment(ctx.cwd) && hasAutoresearchRules(ctx)) {
+      await turnOffAndSettle(ctx);
+      return;
+    }
     if (!hasLoggedExperiment(ctx.cwd)) {
       ctx.ui.notify("No logged experiments to finalize — use '/autoresearch <goal>' to start a session", "error");
       return;
     }
-    if (isAutoresearchActive(getRuntime(ctx))) await turnOffAndSettle(ctx);
+    if (isAutoresearchActive(getRuntime(ctx)) || getRuntime(ctx).loop.phase === "paused") await turnOffAndSettle(ctx);
     ctx.ui.notify("Loading autoresearch-finalize skill", "info");
     sendWhenReady(ctx, FINALIZE_KICKOFF);
   }
@@ -3175,7 +3357,8 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   // An aborted run never drains its queue, so a skill queued as a follow-up
   // would be stranded there. Waiting out the abort lets it start a fresh turn.
   async function turnOffAndSettle(ctx: ExtensionCommandContext): Promise<void> {
-    turnAutoresearchOff(ctx);
+    stopAutoresearchLoop(ctx);
+    ctx.ui.notify("Autoresearch finalized — loop stopped", "info");
     await ctx.waitForIdle();
   }
 
@@ -3189,6 +3372,11 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
       if (isHelpRequest(command)) {
         ctx.ui.notify(renderAutoresearchHelp(), "info");
+        return;
+      }
+
+      if (command === "pause") {
+        pauseAutoresearch(ctx);
         return;
       }
 
@@ -3215,8 +3403,9 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       if (command === "clear") {
         const workDir = resolveWorkDir(ctx.cwd);
         const jsonlPaths = sessionFileCandidates(workDir, "log");
-        recordAutoresearchActivation(workDir, false);
-        dispatchLoop(ctx, { type: "deactivate", inActiveRun: !ctx.isIdle() }, { forceSyncTools: true });
+        const paused = hasAutoresearchRules(ctx);
+        recordAutoresearchActivation(workDir, false, paused);
+        dispatchLoop(ctx, { type: paused ? "pause" : "deactivate", inActiveRun: !ctx.isIdle() }, { forceSyncTools: true });
         runtime.state = createExperimentState();
         stopDashboardServer();
         updateWidget(ctx);
@@ -3237,21 +3426,27 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         }
 
         if (deletedPaths.length > 0) {
-          ctx.ui.notify(`Deleted ${deletedPaths.join(", ")} and turned autoresearch mode OFF`, "info");
+          ctx.ui.notify(`Deleted ${deletedPaths.join(", ")}. Autoresearch ${paused ? "paused" : "OFF"}`, "info");
         } else {
-          ctx.ui.notify("No session log found. Autoresearch mode OFF", "info");
+          ctx.ui.notify(`No session log found. Autoresearch ${paused ? "paused" : "OFF"}`, "info");
         }
         return;
       }
 
+      if (command === "resume" && !hasAutoresearchRules(ctx) && !fs.existsSync(autoresearchJsonlPath(resolveWorkDir(ctx.cwd)))) {
+        ctx.ui.notify("No autoresearch session to resume — start with '/autoresearch <goal>'", "info");
+        return;
+      }
+
       if (isAutoresearchActive(runtime)) {
-        ctx.ui.notify("Autoresearch already active — use '/autoresearch off' to stop first", "info");
+        ctx.ui.notify("Autoresearch already active — use '/autoresearch pause' to pause or finalize to stop", "info");
         return;
       }
 
       const workDir = resolveWorkDir(ctx.cwd);
       recordAutoresearchActivation(workDir, true);
       dispatchLoop(ctx, { type: "activate", resetTurns: true }, { forceSyncTools: true });
+      updateWidget(ctx);
       const rulesLoaded = hasAutoresearchRules(ctx);
       // No .auto/prompt.md yet — load the create skill so the agent follows the
       // setup guidelines. `/skill:<name>` is expanded to the full SKILL.md when

@@ -9,9 +9,11 @@ export interface Subcommand {
 }
 
 export const SUBCOMMANDS: readonly Subcommand[] = [
-  { name: "off", description: "Leave autoresearch mode." },
+  { name: "off", description: "Pause when a playbook exists (legacy alias); use finalize to stop." },
+  { name: "pause", description: "Pause the loop, keeping its state and a visible paused indicator." },
+  { name: "resume", description: "Resume the paused experiment loop." },
   { name: "finalize", description: "Stop the loop and turn kept experiments into reviewable branches." },
-  { name: "clear", description: "Delete the session log (.auto/log.jsonl) and turn autoresearch mode off." },
+  { name: "clear", description: "Delete the session log; remain paused if a playbook exists." },
   { name: "export", description: "Open a local live dashboard for the session log in your browser." },
   { name: "dashboard", description: "Open the fullscreen dashboard overlay in the terminal." },
   { name: "help", description: "Show this help." },
@@ -28,6 +30,8 @@ const HELP_ALIASES: ReadonlySet<string> = new Set(["help", "--help", "-h"]);
 const EXAMPLES = [
   "/autoresearch optimize unit test runtime, monitor correctness",
   "/autoresearch model training, run 5 minutes of train.py and note the loss ratio as optimization target",
+  "/autoresearch pause",
+  "/autoresearch resume",
   "/autoresearch export",
   "/autoresearch dashboard",
 ];

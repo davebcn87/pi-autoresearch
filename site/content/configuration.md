@@ -16,7 +16,7 @@ The optional `.auto/config.json` file lives under the Pi session directory. Path
 | Setting | Type | Behavior |
 | --- | --- | --- |
 | `workingDir` | string | Runs file operations, Git, hooks, and experiments in another existing directory. Relative paths resolve from the Pi session directory. |
-| `maxIterations` | number | Stops the active segment after this many logged experiments. Start a new segment to continue. |
+| `maxIterations` | number | Stops continuation after this many logged experiments, visibly pausing playbook-backed sessions. Start a new segment or raise the limit to continue. |
 | `compactEvery` | number | Optional periodic deterministic compaction cadence: every N logged experiments, emit a lossless persisted-state compaction boundary (`firstKeptEntryId: null`). Omit to preserve prompt-cache continuity and compact only at Pi's normal context threshold. |
 
 > **Important:** The config file remains in the session directory even when `workingDir` points elsewhere.
@@ -50,6 +50,27 @@ run_experiment({
 - **`command`** — The benchmark command. Required.
 - **`timeout_seconds`** — Benchmark timeout. Defaults to 600 seconds.
 - **`checks_timeout_seconds`** — Separate timeout for `.auto/checks.sh`. Defaults to 300 seconds.
+
+## Loop timing
+
+No configuration is required. Every executed `run_experiment` emits `TIMING start run_experiment <unix_ms>` and `TIMING end run_experiment <unix_ms>`. Correctness checks have separate automatic wall timing.
+
+Optionally instrument stages inside the benchmark command:
+
+```sh
+printf 'TIMING start build\n'
+pnpm build
+printf 'TIMING end build\n'
+printf 'TIMING start benchmark\n'
+pnpm bench
+printf 'TIMING end benchmark\n'
+```
+
+Markers accept an optional absolute Unix timestamp in **milliseconds** after the name. Otherwise, durations use live output-receipt time; flush output or include timestamps when output is buffered. Names allow letters, digits and `_.:/-` (80 characters maximum). Nested/repeated names work. `run_experiment`, `checks`, and `agent/other` are reserved. Malformed, unmatched or unclosed spans produce an advisory note, not a benchmark failure. Custom spans are collected from benchmark stdout/stderr before truncation, not from buffered correctness-check output.
+
+Each new log entry includes `timing`: `loopSeconds`, `runSeconds`, `checksSeconds`, `spans`, and `longest`. Full-loop time runs from the previous log entry to this one, including reasoning, editing, other tools and git/hooks overhead. The first starts at activation; pause/reload starts a new window without paused/offline time. Historical timings are not invented. The longest step uses exclusive timing (children are subtracted from enclosing spans); parallel overlaps are not additive. `agent/other` means the unattributed remainder, not just LLM inference.
+
+The widget and dashboards show readable durations, for example **Loop 7m 2s · run 32s · longest: agent/other 6m 30s**. After a baseline reset, progress also shows a dimmed **(+321.0% from first baseline)** after the current-segment delta. Only successful baselines with matching metric name, unit and direction are compared; workload changes still need interpretation.
 
 ## Safety and trust
 
@@ -123,9 +144,11 @@ chmod +x .auto/hooks/before.sh .auto/hooks/after.sh
 ## Session controls
 
 - **`/autoresearch <text>`** — Start a new session or resume an existing one with additional context.
-- **`/autoresearch off`** — Stop auto-resume while preserving the session history.
-- **`/autoresearch finalize`** — Stop the loop, then turn kept experiments into reviewable branches with the finalize skill.
-- **`/autoresearch clear`** — Delete the log and reset runtime state for a clean start.
+- **`/autoresearch pause`** — Pause auto-resume, abort an in-progress run, and keep history; the bar shows **autoresearch paused**, including after reload.
+- **`/autoresearch resume`** — Resume without erasing history or resetting the baseline.
+- **`/autoresearch off`** — Legacy alias; pauses when the playbook exists rather than silently turning off.
+- **`/autoresearch finalize`** — Stop the loop, then turn kept experiments into reviewable branches with the finalize skill. Finalization remains stopped even with the playbook present.
+- **`/autoresearch clear`** — Delete the log and reset results; remains visibly paused if the playbook exists. Delete `.auto/` or finalize to stop a playbook-backed session.
 - **`/autoresearch export`** — Open the live browser dashboard and export a shareable result image.
 - **`/autoresearch dashboard`** — Open the fullscreen, scrollable dashboard in the terminal.
 - **`/autoresearch help`** — List the subcommands and examples without activating autoresearch mode.

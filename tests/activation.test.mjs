@@ -21,6 +21,7 @@ function createHarness({ cwd, branch = [], initialActiveTools = [], busy = false
   const messageRenderers = new Map();
   const tools = new Map();
   const widgets = [];
+  const statuses = [];
   const notifications = [];
   const appendedEntries = [];
   const sentMessages = [];
@@ -35,6 +36,7 @@ function createHarness({ cwd, branch = [], initialActiveTools = [], busy = false
     },
     appendEntry(customType, data) {
       appendedEntries.push({ customType, data });
+      branch.push({ type: "custom", customType, data });
     },
     registerTool(tool) {
       tools.set(tool.name, tool);
@@ -84,6 +86,7 @@ function createHarness({ cwd, branch = [], initialActiveTools = [], busy = false
       setWidget(name, widget) {
         widgets.push({ name, widget });
       },
+      setStatus(name, value) { statuses.push({ name, value }); },
       notify(message, level) {
         notifications.push({ message, level });
       },
@@ -101,6 +104,7 @@ function createHarness({ cwd, branch = [], initialActiveTools = [], busy = false
     sentMessages,
     tools,
     widgets,
+    statuses,
     activeTools: () => activeTools,
     aborted: () => aborted,
   };
@@ -207,6 +211,280 @@ async function writeSameCwdLog(cwd) {
     ].join("\n") + "\n",
   );
 }
+
+for (const command of ["/skill:autoresearch-create", "/skill:autoresearch-create optimize TPS", "/autoresearch-create optimize TPS"]) {
+  test(`create skill activates tools before expansion: ${command}`, async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-skill-"));
+    try {
+      const harness = createHarness({ cwd, initialActiveTools: ["bash"] });
+      await harness.handlers.get("session_start")({}, harness.ctx);
+      assert.deepEqual(harness.activeTools(), ["bash"]);
+      const result = await harness.handlers.get("input")({ text: command, source: "interactive" }, harness.ctx);
+      assert.equal(result, undefined, "skill expansion must still run");
+      assert.deepEqual(harness.activeTools().sort(), ["bash", ...AUTORESEARCH_TOOLS].sort());
+      assert.equal(harness.appendedEntries.at(-1).data.active, true);
+      assert.equal(harness.sentMessages.length, 0, "do not duplicate the skill kickoff");
+    } finally { await rm(cwd, { recursive: true, force: true }); }
+  });
+}
+
+test("already-expanded create skills activate before the first provider request", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-skill-"));
+  try {
+    const harness = createHarness({ cwd });
+    await harness.handlers.get("session_start")({}, harness.ctx);
+    const sections = {};
+    await harness.handlers.get("before_agent_start")({ prompt: '<skill name="autoresearch-create" location="/skills/SKILL.md">instructions</skill>', systemPromptOptions: { sections } }, harness.ctx);
+    assert.deepEqual(harness.activeTools().sort(), AUTORESEARCH_TOOLS.sort());
+    assert.match(sections.autoresearch, /Autoresearch Mode \(ACTIVE\)/);
+  } finally { await rm(cwd, { recursive: true, force: true }); }
+});
+
+test("mentioning the create skill or other skills does not activate mode", async () => {
+  const harness = createHarness({ cwd: "/tmp/no-autoresearch-project" });
+  for (const text of ["explain /skill:autoresearch-create", "/skill:autoresearch-finalize", "/skill:autoresearch-create-extra", "/autoresearch help"]) {
+    await harness.handlers.get("input")({ text, source: "interactive" }, harness.ctx);
+  }
+  assert.deepEqual(harness.activeTools(), []);
+  assert.equal(harness.appendedEntries.length, 0);
+});
+
+for (const point of ["startup", "before_agent_start", "turn_end"]) {
+  for (const artifact of ["prompt", "log"]) {
+    test(`${point} discovers ${artifact} session files and activates real tools`, async () => {
+      const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-live-files-"));
+      try {
+        const harness = createHarness({ cwd, busy: point === "turn_end" });
+        if (point !== "startup") await harness.handlers.get("session_start")({}, harness.ctx);
+        if (artifact === "log") await writeSameCwdLog(cwd);
+        else {
+          await mkdir(join(cwd, ".auto"), { recursive: true });
+          await writeFile(join(cwd, ".auto", "prompt.md"), "# Optimize TPS\n");
+        }
+        const sections = {};
+        const event = { prompt: "continue", systemPromptOptions: { sections }, outcome: "completed", entries: [], toolResults: [] };
+        const result = await harness.handlers.get(point === "startup" ? "session_start" : point)(event, harness.ctx);
+        assert.deepEqual(harness.activeTools().sort(), AUTORESEARCH_TOOLS.sort());
+        if (point === "before_agent_start") assert.match(sections.autoresearch, /Autoresearch Mode \(ACTIVE\)/);
+        if (point === "turn_end") {
+          assert.equal(result.continue, true);
+          assert.match(result.entries.at(-1).content, /not manual shell\/log substitutes/);
+          const repeated = await harness.handlers.get("turn_end")(event, harness.ctx);
+          assert.equal(repeated, undefined, "recover only once; do not fake logged experiments");
+          const settle = await harness.handlers.get("agent_before_settle")(event, harness.ctx);
+          assert.equal(settle, undefined, "chat-only guard still applies");
+        }
+      } finally { await rm(cwd, { recursive: true, force: true }); }
+    });
+  }
+}
+
+test("live discovery respects manual off, clear, and finalize and never revives stopping", async () => {
+  for (const command of ["off", "clear", "finalize"]) {
+    const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-off-files-"));
+    try {
+      await writeSameCwdLog(cwd);
+      const harness = createHarness({ cwd, busy: true });
+      await harness.handlers.get("session_start")({}, harness.ctx);
+      await harness.commands.get("autoresearch").handler(command, harness.ctx);
+      // clear may remove the log, but a late tool can write another file.
+      await writeSameCwdLog(cwd);
+      const event = { prompt: "continue", systemPromptOptions: { sections: {} }, outcome: "completed", entries: [] };
+      assert.equal(await harness.handlers.get("turn_end")(event, harness.ctx), undefined);
+      await harness.handlers.get("agent_settled")({ aborted: true }, harness.ctx);
+      await harness.handlers.get("before_agent_start")(event, harness.ctx);
+      assert.deepEqual(harness.activeTools(), []);
+      assert.equal("autoresearch" in event.systemPromptOptions.sections, false);
+    } finally { await rm(cwd, { recursive: true, force: true }); }
+  }
+});
+
+test("live discovery never activates unrelated redirected working directories", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-cwd-"));
+  const workDir = await mkdtemp(join(tmpdir(), "pi-autoresearch-workdir-"));
+  try {
+    const harness = createHarness({ cwd });
+    await harness.handlers.get("session_start")({}, harness.ctx);
+    await writeRedirectedSession(cwd, workDir);
+    const event = { prompt: "hello", systemPromptOptions: { sections: {} }, outcome: "completed", entries: [] };
+    await harness.handlers.get("before_agent_start")(event, harness.ctx);
+    assert.equal(await harness.handlers.get("turn_end")(event, harness.ctx), undefined);
+    assert.deepEqual(harness.activeTools(), []);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+    await rm(workDir, { recursive: true, force: true });
+  }
+});
+
+test("off with a playbook pauses visibly, survives reload/late events, and resume reactivates", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-pause-"));
+  const branch = [];
+  try {
+    await writeSameCwdLog(cwd);
+    await writeFile(join(cwd, ".auto/prompt.md"), "# Optimize TPS");
+    let harness = createHarness({ cwd, branch, busy: true });
+    await harness.handlers.get("session_start")({}, harness.ctx);
+    await harness.commands.get("autoresearch").handler("off", harness.ctx);
+    assert.deepEqual(harness.activeTools(), []);
+    assert.equal(harness.aborted(), true);
+    assert.deepEqual(harness.statuses.at(-1), { name: "autoresearch", value: "autoresearch paused" });
+    assert.match(harness.widgets.at(-1).widget[0], /autoresearch paused/);
+    await harness.handlers.get("agent_settled")({ aborted: true }, harness.ctx);
+    const event = { prompt: "chat", outcome: "completed", entries: [], systemPromptOptions: { sections: {} } };
+    await harness.handlers.get("before_agent_start")(event, harness.ctx);
+    assert.equal(await harness.handlers.get("turn_end")(event, harness.ctx), undefined);
+    assert.deepEqual(harness.activeTools(), []);
+    harness = createHarness({ cwd, branch });
+    await harness.handlers.get("session_start")({}, harness.ctx);
+    assert.match(harness.widgets.at(-1).widget[0], /autoresearch paused/);
+    await harness.commands.get("autoresearch").handler("resume", harness.ctx);
+    assert.deepEqual(harness.activeTools().sort(), AUTORESEARCH_TOOLS.sort());
+    assert.equal(harness.statuses.at(-1).value, undefined);
+    assert.equal(harness.sentMessages.length, 1);
+  } finally { await rm(cwd, { recursive: true, force: true }); }
+});
+
+test("clear cannot stop a playbook-backed session; finalize can, without deleting the playbook", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-finalize-"));
+  const branch = [];
+  try {
+    await writeSameCwdLog(cwd);
+    await writeFile(join(cwd, ".auto/prompt.md"), "# Optimize TPS");
+    const harness = createHarness({ cwd, branch });
+    await harness.handlers.get("session_start")({}, harness.ctx);
+    await harness.commands.get("autoresearch").handler("clear", harness.ctx);
+    assert.match(harness.widgets.at(-1).widget[0], /autoresearch paused/);
+    await harness.commands.get("autoresearch").handler("finalize", harness.ctx);
+    assert.equal(harness.widgets.at(-1).widget, undefined);
+    assert.equal(existsSync(join(cwd, ".auto/prompt.md")), true);
+    const reloaded = createHarness({ cwd, branch });
+    await reloaded.handlers.get("session_start")({}, reloaded.ctx);
+    assert.deepEqual(reloaded.activeTools(), []);
+    assert.equal(reloaded.widgets.at(-1).widget, undefined);
+  } finally { await rm(cwd, { recursive: true, force: true }); }
+});
+
+for (const paused of [false, true]) {
+  test(`deleting .auto stops an ${paused ? "paused" : "active"} session`, async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-delete-"));
+    try {
+      await writeSameCwdLog(cwd);
+      await writeFile(join(cwd, ".auto/prompt.md"), "# Optimize TPS");
+      const harness = createHarness({ cwd });
+      await harness.handlers.get("session_start")({}, harness.ctx);
+      if (paused) await harness.commands.get("autoresearch").handler("pause", harness.ctx);
+      await rm(join(cwd, ".auto"), { recursive: true, force: true });
+      await harness.handlers.get("before_agent_start")({ prompt: "chat", systemPromptOptions: { sections: {} } }, harness.ctx);
+      assert.deepEqual(harness.activeTools(), []);
+      assert.equal(harness.widgets.at(-1).widget, undefined);
+      assert.equal(harness.statuses.at(-1).value, undefined);
+    } finally { await rm(cwd, { recursive: true, force: true }); }
+  });
+}
+
+test("failed attempts leave baseline unset until the first kept measurement, including reload", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-first-success-"));
+  try {
+    const harness = createHarness({ cwd });
+    await harness.tools.get("init_experiment").execute("init", { name: "TPS", metric_name: "tps", direction: "higher" }, undefined, undefined, harness.ctx);
+    assert.match(harness.widgets.at(-1).widget[0], /awaiting first successful baseline/);
+    for (const [index, status] of ["crash", "checks_failed", "keep"].entries()) {
+      const result = await harness.tools.get("log_experiment").execute(`run${index}`, { commit: "abcdef0", status, metric: 10 + index, description: status, metrics: {}, asi: { hypothesis: "test" } }, undefined, undefined, harness.ctx);
+      assert.equal(result.details.state.bestMetric, status === "keep" ? 12 : null);
+    }
+    const reloaded = createHarness({ cwd });
+    await reloaded.handlers.get("session_start")({}, reloaded.ctx);
+    const view = reloaded.widgets.at(-1).widget({}, PLAIN_THEME).render(120).join("\n");
+    assert.match(view, /Baseline:.*12.*#3/);
+  } finally { await rm(cwd, { recursive: true, force: true }); }
+});
+
+test("iteration limits leave a playbook-backed loop visibly paused across reloads", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-limit-pause-"));
+  try {
+    await mkdir(join(cwd, ".auto"), { recursive: true });
+    await writeFile(join(cwd, ".auto/prompt.md"), "Optimize TPS\n");
+    await writeFile(join(cwd, ".auto/config.json"), JSON.stringify({ maxIterations: 1 }));
+    const harness = createHarness({ cwd });
+    await harness.tools.get("init_experiment").execute("init", { name: "TPS", metric_name: "tps", direction: "higher" }, undefined, undefined, harness.ctx);
+    await harness.tools.get("log_experiment").execute("log", { commit: "abcdef0", status: "keep", metric: 100, metrics: {}, description: "measurement", asi: {} }, undefined, undefined, harness.ctx);
+    assert.match(harness.widgets.at(-1).widget.join("\n"), /autoresearch paused/);
+    const reloaded = createHarness({ cwd, branch: harness.appendedEntries.map((entry) => ({ type: "custom", ...entry })) });
+    await reloaded.handlers.get("session_start")({}, reloaded.ctx);
+    assert.match(reloaded.widgets.at(-1).widget.join("\n"), /autoresearch paused/);
+  } finally { await rm(cwd, { recursive: true, force: true }); }
+});
+
+test("run_experiment always emits automatic TIMING and persists untruncated optional spans", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-timing-"));
+  try {
+    const harness = createHarness({ cwd });
+    await harness.tools.get("init_experiment").execute("init", { name: "Timing", metric_name: "tps", metric_unit: "tok/s", direction: "higher" }, undefined, undefined, harness.ctx);
+    await writeFile(join(cwd, ".auto/measure.sh"), "printf 'TIMING start build\\n'; printf 'line\\n%.0s' {1..2000}; printf 'TIMING end build\\nMETRIC tps=100\\n'\n");
+    const run = await harness.tools.get("run_experiment").execute("run", { command: "bash .auto/measure.sh" }, undefined, undefined, harness.ctx);
+    assert.match(run.content[0].text, /TIMING start run_experiment \d+/);
+    assert.match(run.content[0].text, /TIMING end run_experiment \d+/);
+    assert.ok(run.details.timing.spans.some((span) => span.name === "build"));
+    const logged = await harness.tools.get("log_experiment").execute("log", { commit: "abcdef0", status: "keep", metric: 100, metrics: {}, description: "first", asi: {} }, undefined, undefined, harness.ctx);
+    assert.ok(logged.details.experiment.timing.loopSeconds >= logged.details.experiment.timing.runSeconds);
+    assert.match(logged.content[0].text, /Loop .* · run .* · longest:/);
+    const reloaded = createHarness({ cwd });
+    await reloaded.handlers.get("session_start")({}, reloaded.ctx);
+    const view = reloaded.widgets.at(-1).widget({}, PLAIN_THEME).render(160).join("\n");
+    assert.match(view, /Loop .*longest:/);
+  } finally { await rm(cwd, { recursive: true, force: true }); }
+});
+
+test("failed run gets automatic timing and cannot be kept as baseline", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-timing-fail-"));
+  try {
+    const harness = createHarness({ cwd });
+    await harness.tools.get("init_experiment").execute("init", { name: "Timing", metric_name: "tps", direction: "higher" }, undefined, undefined, harness.ctx);
+    const run = await harness.tools.get("run_experiment").execute("run", { command: "exit 1" }, undefined, undefined, harness.ctx);
+    assert.equal(run.details.passed, false);
+    assert.match(run.content[0].text, /TIMING end run_experiment/);
+    const params = { commit: "abcdef0", status: "keep", metric: 100, metrics: {}, description: "bad baseline", asi: {} };
+    const blocked = await harness.tools.get("log_experiment").execute("log", params, undefined, undefined, harness.ctx);
+    assert.match(blocked.content[0].text, /Cannot keep.*benchmark failed/);
+    const logged = await harness.tools.get("log_experiment").execute("log", { ...params, status: "crash", metric: 0 }, undefined, undefined, harness.ctx);
+    assert.equal(logged.details.state.bestMetric, null);
+    assert.ok(logged.details.experiment.timing);
+  } finally { await rm(cwd, { recursive: true, force: true }); }
+});
+
+test("timing end is emitted for timed-out and aborted commands too", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-timing-abort-"));
+  try {
+    const harness = createHarness({ cwd });
+    await harness.tools.get("init_experiment").execute("init", { name: "Timing", metric_name: "tps", direction: "higher" }, undefined, undefined, harness.ctx);
+    const command = `node -e 'console.log("ready"); setInterval(() => {}, 1000)'`;
+    const timedOut = await harness.tools.get("run_experiment").execute("timeout", { command, timeout_seconds: 0.01 }, undefined, undefined, harness.ctx);
+    assert.equal(timedOut.details.timedOut, true);
+    assert.match(timedOut.content[0].text, /TIMING end run_experiment/);
+    const controller = new AbortController();
+    const updates = [];
+    await assert.rejects(harness.tools.get("run_experiment").execute("abort", { command }, controller.signal, (update) => {
+      updates.push(update);
+      if (update.content[0]?.text.includes("ready")) controller.abort();
+    }, harness.ctx), /aborted/);
+    assert.ok(updates.some((update) => /TIMING end run_experiment/.test(update.content[0]?.text)));
+  } finally { await rm(cwd, { recursive: true, force: true }); }
+});
+
+test("Progress appends overall delta after a baseline reset, including after reload", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-overall-"));
+  try {
+    const harness = createHarness({ cwd });
+    const init = async () => harness.tools.get("init_experiment").execute("init", { name: "TPS", metric_name: "tps", metric_unit: "tok/s", direction: "higher" }, undefined, undefined, harness.ctx);
+    const log = async (metric) => harness.tools.get("log_experiment").execute("log", { commit: "abcdef0", status: "keep", metric, metrics: {}, description: "measurement", asi: {} }, undefined, undefined, harness.ctx);
+    await init(); await log(100); await init(); await log(300); await log(400);
+    const render = (value) => value.widgets.at(-1).widget({}, PLAIN_THEME).render(200).join("\n");
+    assert.match(render(harness), /Progress:.*\(\+33.3%\).*\(\+300.0% from first baseline\)/);
+    const reloaded = createHarness({ cwd });
+    await reloaded.handlers.get("session_start")({}, reloaded.ctx);
+    assert.match(render(reloaded), /\(\+300.0% from first baseline\)/);
+  } finally { await rm(cwd, { recursive: true, force: true }); }
+});
 
 test("same-cwd persisted logs still auto-activate autoresearch", () => {
   assert.equal(
@@ -607,7 +885,7 @@ test("/autoresearch offers completions for every subcommand", () => {
   const complete = harness.commands.get("autoresearch").getArgumentCompletions;
 
   assert.ok(complete);
-  assert.deepEqual(complete("")?.map((item) => item.value), ["off", "finalize", "clear", "export", "dashboard", "help"]);
+  assert.deepEqual(complete("")?.map((item) => item.value), ["off", "pause", "resume", "finalize", "clear", "export", "dashboard", "help"]);
   assert.deepEqual(complete("fin")?.map((item) => item.value), ["finalize"]);
   assert.deepEqual(complete("exp")?.map((item) => item.value), ["export"]);
   assert.deepEqual(complete("dash")?.map((item) => item.value), ["dashboard"]);
@@ -697,7 +975,7 @@ test("/autoresearch help and its aliases show usage instead of starting a sessio
 
     assert.equal(harness.sentMessages.length, 0, `"${alias}" started a research session`);
     assert.equal(harness.appendedEntries.length, 0);
-    assert.match(harness.notifications.at(-1).message, /^Usage: \/autoresearch \[off\|finalize\|/);
+    assert.match(harness.notifications.at(-1).message, /^Usage: \/autoresearch \[off\|pause\|resume\|finalize\|/);
   }
 });
 
