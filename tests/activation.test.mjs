@@ -699,9 +699,13 @@ test("Esc and exhausted native retries persist a pause without any restart messa
       assert.equal(harness.customMessages.length, 0);
       assert.equal(harness.sentMessages.length, 0);
       if (stop !== "escape") {
-        const result = await harness.handlers.get("agent_before_settle")({ outcome: stop === "error" ? "error" : "completed", entries: [], continue: false }, harness.ctx);
+        const result = await harness.handlers.get("agent_before_settle")({ outcome: stop === "error" ? "error" : "completed", entries: [], continue: false, context: { canContinue: false } }, harness.ctx);
         assert.equal(result?.continue, stop === "error" ? undefined : true);
-        if (result) assert.deepEqual(result.entries, []);
+        if (result) {
+          assert.equal(result.entries.length, 1);
+          assert.equal(result.entries[0].type, "custom_message");
+          assert.equal(result.entries[0].display, false);
+        }
       }
       // Pi skips before_settle on abort; an abort during a handler suppresses
       // its proposed continuation and still emits this final notification.
@@ -773,11 +777,13 @@ test("threshold compaction during a run defers resume to agent_before_settle", a
     assert.equal(harness.customMessages.length, 0);
 
     const settle = await harness.handlers.get("agent_before_settle")(
-      { outcome: "completed", entries: [], continue: false },
+      { outcome: "completed", entries: [], continue: false, context: { canContinue: false } },
       harness.ctx,
     );
     assert.equal(settle?.continue, true);
-    assert.deepEqual(settle?.entries, []);
+    assert.equal(settle?.entries.length, 1);
+    assert.equal(settle?.entries[0].type, "custom_message");
+    assert.equal(settle?.entries[0].display, false);
     assert.equal(harness.sentMessages.length, 0);
   } finally {
     await rm(cwd, { recursive: true, force: true });
@@ -1241,14 +1247,33 @@ test("agent_before_settle resumes after logged experiments and skips chat-only o
     }, undefined, undefined, harness.ctx);
 
     const completedSettle = await harness.handlers.get("agent_before_settle")(
-      { outcome: "completed", entries: [], continue: false },
+      { outcome: "completed", entries: [], continue: false, context: { canContinue: false } },
       harness.ctx,
     );
     assert.equal(completedSettle?.continue, true);
-    assert.deepEqual(completedSettle?.entries, []);
+    assert.equal(completedSettle?.entries.length, 1);
+    assert.equal(completedSettle?.entries[0].type, "custom_message");
+    assert.equal(completedSettle?.entries[0].display, false);
     assert.equal(harness.customMessages.length, 0);
 
-    // Old session history still renders even though new runs emit no messages.
+    // When Pi already has runnable context (e.g., queued message / non-assistant tail), no hidden message is added.
+    await harness.handlers.get("agent_start")({}, harness.ctx);
+    await harness.tools.get("log_experiment").execute("t3", {
+      commit: "abcdef2",
+      metric: 7,
+      status: "keep",
+      description: "faster still",
+      metrics: {},
+      asi: { hypothesis: "zero-copy" },
+    }, undefined, undefined, harness.ctx);
+    const runnableSettle = await harness.handlers.get("agent_before_settle")(
+      { outcome: "completed", entries: [], continue: false, context: { canContinue: true } },
+      harness.ctx,
+    );
+    assert.equal(runnableSettle?.continue, true);
+    assert.deepEqual(runnableSettle?.entries, []);
+
+    // Old session history still renders cleanly.
     const oldResume = { content: "Run the next iteration now.", details: { turn: 1 } };
     const renderer = harness.messageRenderers.get("pi-autoresearch.resume");
     assert.ok(renderer);
@@ -1258,6 +1283,25 @@ test("agent_before_settle resumes after logged experiments and skips chat-only o
     assert.match(expanded, /Run the next iteration now/);
   } finally {
     await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("/autoresearch on and resume activate without treating the subcommand word as a research goal", async () => {
+  for (const subcmd of ["on", "resume"]) {
+    const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-on-"));
+    try {
+      await mkdir(join(cwd, ".auto"), { recursive: true });
+      await writeFile(join(cwd, ".auto/prompt.md"), "# Optimize TPS\n");
+      const harness = createHarness({ cwd, branch: [activationEntry(cwd, false)] });
+      await harness.handlers.get("session_start")({}, harness.ctx);
+      await harness.commands.get("autoresearch").handler(subcmd, harness.ctx);
+      assert.equal(harness.sentMessages.length, 1);
+      const sent = harness.sentMessages[0].content;
+      assert.match(sent, /^Autoresearch mode active\./);
+      assert.doesNotMatch(sent, new RegExp(`^Autoresearch mode active\\.\\s+${subcmd}\\b`));
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
   }
 });
 

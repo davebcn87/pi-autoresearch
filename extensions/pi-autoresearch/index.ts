@@ -1243,6 +1243,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     ctx: ExtensionContext,
     existingEntries: readonly SessionBoundaryDraft[],
     effect: Extract<LoopEffect, { type: "boundary_continue" }>,
+    canContinue = false,
   ): { entries: SessionBoundaryDraft[]; continue: true } => {
     const entries: SessionBoundaryDraft[] = [...existingEntries];
     if (effect.compact) {
@@ -1253,9 +1254,21 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         ),
         firstKeptEntryId: null,
       });
+    } else if (!canContinue) {
+      // Pi's boundary validator rejects `continue: true` when the trailing LLM
+      // message has role "assistant". A hidden (`display: false`) custom_message
+      // supplies runnable model context without cluttering the chat transcript,
+      // and Pi still suppresses continuation if the user presses Esc.
+      entries.push({
+        type: "custom_message",
+        customType: AUTORESEARCH_RESUME_MESSAGE,
+        content: effect.compacted
+          ? "Continue the next autoresearch iteration from the compaction summary."
+          : "Continue the next autoresearch iteration.",
+        display: false,
+        details: { turn: effect.turn, compacted: effect.compacted },
+      });
     }
-    // Pi schedules one context-only continuation and suppresses it on abort.
-    // No synthetic "continue" message, queue, or timer.
     return { entries, continue: true };
   };
 
@@ -1629,7 +1642,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       compactEvery: runtime.state.compactEvery,
       stopReason: currentStopReason(runtime),
     });
-    if (cont) return buildBoundaryContinuation(ctx, event.entries, cont);
+    if (cont) return buildBoundaryContinuation(ctx, event.entries, cont, event.context?.canContinue === true);
     if (recovered && !currentStopReason(runtime)) {
       // One repair turn, not a fake logged experiment. The normal chat-only
       // guard remains in charge of every subsequent continuation.
@@ -1662,7 +1675,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       compactEvery: runtime.state.compactEvery,
       stopReason: currentStopReason(runtime),
     });
-    return cont ? buildBoundaryContinuation(ctx, event.entries, cont) : undefined;
+    return cont ? buildBoundaryContinuation(ctx, event.entries, cont, event.context?.canContinue === true) : undefined;
   });
 
   pi.on("agent_settled", async (event, ctx) => {
@@ -3414,14 +3427,15 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       dispatchLoop(ctx, { type: "activate", resetTurns: true }, { forceSyncTools: true });
       updateWidget(ctx);
       const rulesLoaded = hasAutoresearchRules(ctx);
+      const goalText = command === "resume" || command === "on" ? "" : trimmedArgs;
       // No .auto/prompt.md yet — load the create skill so the agent follows the
       // setup guidelines. `/skill:<name>` is expanded to the full SKILL.md when
       // sent with `expandPromptTemplates` (see sendWhenReady), and trailing args
       // are appended as the session goal. Must be sent as its own message that
       // STARTS with `/skill:` so expansion triggers — don't prepend hook output.
       const kickoff = rulesLoaded
-        ? `Autoresearch mode active. ${trimmedArgs} ${BENCHMARK_GUARDRAIL}`
-        : `/skill:autoresearch-create ${trimmedArgs} ${BENCHMARK_GUARDRAIL}`.replace(/\s+/g, " ").trim();
+        ? ["Autoresearch mode active.", goalText, BENCHMARK_GUARDRAIL].filter(Boolean).join(" ")
+        : ["/skill:autoresearch-create", goalText, BENCHMARK_GUARDRAIL].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
 
       ctx.ui.notify(
         rulesLoaded
