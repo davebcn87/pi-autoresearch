@@ -10,14 +10,14 @@ import test from "node:test";
 
 import autoresearchExtension, {
   computeConfidence,
-  DEFAULT_COMPACT_AT_TOKENS,
+  DEFAULT_COMPACT_AT_PERCENT,
 } from "../extensions/pi-autoresearch/index.ts";
 import {
   autoresearchSummaryPathsFor,
   buildAutoresearchCompactionSummary,
 } from "../extensions/pi-autoresearch/compaction.ts";
 
-function makeHarness({ cwd, contextTokens = 10_000, onExec }) {
+function makeHarness({ cwd, contextTokens = 10_000, contextWindow = 1_000_000, onExec }) {
   const handlers = new Map();
   const tools = new Map();
   const execCalls = [];
@@ -50,7 +50,7 @@ function makeHarness({ cwd, contextTokens = 10_000, onExec }) {
     isIdle: () => true,
     hasPendingMessages: () => false,
     abort() {},
-    getContextUsage: () => ({ tokens: contextTokens, contextWindow: 1_000_000, percent: contextTokens / 10_000 }),
+    getContextUsage: () => ({ tokens: contextTokens, contextWindow, percent: (contextTokens / contextWindow) * 100 }),
     sessionManager: {
       getSessionId: () => `optb:${cwd}`,
       getBranch: () => [],
@@ -144,10 +144,19 @@ test("log_experiment shows vs-best delta and omits 'likely real' confidence verd
   }
 });
 
-test("token-ceiling compaction triggers at default 180k and can be disabled in config.json", async () => {
-  const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-tokcompact-"));
+test("context-window compaction triggers at default 70% and respects config overrides", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-pctcompact-"));
   try {
-    const h = makeHarness({ cwd, contextTokens: DEFAULT_COMPACT_AT_TOKENS + 5000 });
+    assert.equal(DEFAULT_COMPACT_AT_PERCENT, 70);
+    // Below 70% (65% of 200k) -> no compaction.
+    const below = makeHarness({ cwd, contextTokens: 130_000, contextWindow: 200_000 });
+    await below.tools.get("init_experiment").execute("init", { name: "TPS", metric_name: "tps", direction: "higher" }, undefined, undefined, below.ctx);
+    await below.handlers.get("agent_start")({}, below.ctx);
+    await below.tools.get("log_experiment").execute("l0", { status: "keep", metric: 90, description: "below" }, undefined, undefined, below.ctx);
+    assert.equal(await below.handlers.get("turn_end")({ outcome: "completed", entries: [], continue: false, toolResults: [] }, below.ctx), undefined);
+
+    // At 72% of 200k -> triggers deterministic compaction.
+    const h = makeHarness({ cwd, contextTokens: 144_000, contextWindow: 200_000 });
     await h.tools.get("init_experiment").execute("init", { name: "TPS", metric_name: "tps", direction: "higher" }, undefined, undefined, h.ctx);
     await h.handlers.get("agent_start")({}, h.ctx);
     await h.tools.get("log_experiment").execute("l1", { status: "keep", metric: 100, description: "first" }, undefined, undefined, h.ctx);
@@ -157,11 +166,16 @@ test("token-ceiling compaction triggers at default 180k and can be disabled in c
     assert.equal(turnEnd?.entries[0]?.type, "compaction");
     assert.equal(turnEnd?.entries[0]?.firstKeptEntryId, null);
 
-    // Disable via compactAtTokens: false
-    await writeFile(join(cwd, ".auto/config.json"), JSON.stringify({ compactAtTokens: false }));
+    // Disable via compactAtPercent: false.
+    await writeFile(join(cwd, ".auto/config.json"), JSON.stringify({ compactAtPercent: false }));
     await h.tools.get("log_experiment").execute("l2", { status: "keep", metric: 110, description: "second" }, undefined, undefined, h.ctx);
-    const turnEnd2 = await h.handlers.get("turn_end")({ outcome: "completed", entries: [], continue: false, toolResults: [] }, h.ctx);
-    assert.equal(turnEnd2, undefined);
+    assert.equal(await h.handlers.get("turn_end")({ outcome: "completed", entries: [], continue: false, toolResults: [] }, h.ctx), undefined);
+
+    // Explicit compactAtTokens override still works.
+    await writeFile(join(cwd, ".auto/config.json"), JSON.stringify({ compactAtTokens: 100_000 }));
+    await h.tools.get("log_experiment").execute("l3", { status: "keep", metric: 120, description: "third" }, undefined, undefined, h.ctx);
+    const turnEnd3 = await h.handlers.get("turn_end")({ outcome: "completed", entries: [], continue: false, toolResults: [] }, h.ctx);
+    assert.equal(turnEnd3?.entries[0]?.type, "compaction");
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }

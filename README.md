@@ -313,7 +313,8 @@ Create `.auto/config.json` in your pi session directory to customize behavior:
 | `workingDir` | string | Override the directory for all autoresearch operations — file I/O, command execution, and git. Supports absolute or relative paths (resolved against the pi session cwd). The config file itself always stays under the session cwd. Fails if the directory doesn't exist. |
 | `maxIterations` | number | Maximum experiments before auto-stopping. The agent is told to stop and won't run more experiments until a new segment is initialized. |
 | `compactEvery` | number | Optional periodic deterministic compaction cadence: every N logged experiments, emit a lossless persisted-state compaction boundary (`firstKeptEntryId: null`) so each window starts with fresh context. |
-| `compactAtTokens` | number \| `false` | Token ceiling for deterministic compaction between experiments (default `180000`). Prevents large-window models from ballooning to 1M+ tokens of stale diffs. Set `0` or `false` to disable. |
+| `compactAtPercent` | number \| `false` | Context-window percentage ceiling for deterministic compaction between experiments (default `70`). Set `0` or `false` to disable. |
+| `compactAtTokens` | number \| `false` | Optional absolute token ceiling override instead of `compactAtPercent`. Set `0` or `false` to disable automatic compaction. |
 
 ### Long-running loops and context
 

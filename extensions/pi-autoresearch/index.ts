@@ -128,13 +128,15 @@ interface ExperimentState {
   maxExperiments: number | null;
   /** Optional periodic deterministic compaction cadence (every N logged experiments). null = disabled. */
   compactEvery: number | null;
-  /** Token ceiling for deterministic compaction between iterations. null = disabled (default 180000). */
+  /** Context window % ceiling for deterministic compaction between iterations (default 70). null = disabled. */
+  compactAtPercent: number | null;
+  /** Optional absolute token ceiling override for deterministic compaction. null = use compactAtPercent. */
   compactAtTokens: number | null;
   /** Marginal confidence score (latest improvement over previous best / noise floor). null if insufficient data. */
   confidence: number | null;
 }
 
-export const DEFAULT_COMPACT_AT_TOKENS = 180_000;
+export const DEFAULT_COMPACT_AT_PERCENT = 70;
 
 export const AUTORESUME_TURN_LIMIT = 200;
 export const CONSECUTIVE_FAILURE_OVERRIDE_LIMIT = 20;
@@ -522,6 +524,7 @@ function currentResults(results: ExperimentResult[], segment: number): Experimen
 interface AutoresearchConfig {
   maxIterations?: number;
   compactEvery?: number;
+  compactAtPercent?: number | false;
   compactAtTokens?: number | false;
   workingDir?: string;
 }
@@ -553,14 +556,25 @@ function readCompactEvery(cwd: string): number | null {
     : null;
 }
 
-/** Read token ceiling for deterministic compaction (default 180k; 0 or false disables). */
+/** Read context-window % ceiling for deterministic compaction (default 70%; 0 or false disables). */
+function readCompactAtPercent(cwd: string): number | null {
+  const config = readConfig(cwd);
+  if (config.compactAtPercent === false || config.compactAtPercent === 0) return null;
+  if (typeof config.compactAtPercent === "number" && config.compactAtPercent > 0) {
+    return Math.min(100, config.compactAtPercent);
+  }
+  // If user explicitly set compactAtTokens (either a custom cap or false/0 to disable), honor that.
+  if (config.compactAtTokens !== undefined) return null;
+  return DEFAULT_COMPACT_AT_PERCENT;
+}
+
+/** Read optional absolute token ceiling override for deterministic compaction. */
 function readCompactAtTokens(cwd: string): number | null {
   const config = readConfig(cwd);
-  if (config.compactAtTokens === false || config.compactAtTokens === 0) return null;
   if (typeof config.compactAtTokens === "number" && config.compactAtTokens > 0) {
     return Math.floor(config.compactAtTokens);
   }
-  return DEFAULT_COMPACT_AT_TOKENS;
+  return null;
 }
 
 /**
@@ -799,7 +813,8 @@ function createExperimentState(): ExperimentState {
     currentSegment: 0,
     maxExperiments: null,
     compactEvery: null,
-    compactAtTokens: DEFAULT_COMPACT_AT_TOKENS,
+    compactAtPercent: DEFAULT_COMPACT_AT_PERCENT,
+    compactAtTokens: null,
     confidence: null,
   };
 }
@@ -808,6 +823,7 @@ function createExperimentState(): ExperimentState {
 function refreshConfigLimits(cwd: string, state: ExperimentState): void {
   state.maxExperiments = readMaxExperiments(cwd);
   state.compactEvery = readCompactEvery(cwd);
+  state.compactAtPercent = readCompactAtPercent(cwd);
   state.compactAtTokens = readCompactAtTokens(cwd);
 }
 
@@ -1666,9 +1682,20 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   });
 
   const isContextOverCompactionLimit = (ctx: ExtensionContext, state: ExperimentState): boolean => {
-    if (state.compactAtTokens === null) return false;
-    const tokens = ctx.getContextUsage?.()?.tokens;
-    return typeof tokens === "number" && Number.isFinite(tokens) && tokens >= state.compactAtTokens;
+    const usage = ctx.getContextUsage?.();
+    if (!usage) return false;
+    if (state.compactAtTokens !== null && typeof usage.tokens === "number" && Number.isFinite(usage.tokens)) {
+      if (usage.tokens >= state.compactAtTokens) return true;
+    }
+    if (state.compactAtPercent !== null) {
+      const pct = typeof usage.percent === "number" && Number.isFinite(usage.percent)
+        ? usage.percent
+        : (typeof usage.tokens === "number" && Number.isFinite(usage.tokens) && usage.contextWindow > 0)
+          ? (usage.tokens / usage.contextWindow) * 100
+          : null;
+      if (pct !== null && pct >= state.compactAtPercent) return true;
+    }
+    return false;
   };
 
   pi.on("turn_end", async (event, ctx) => {

@@ -106,7 +106,7 @@ JSON config file that lives in `.auto/` under the pi session's working directory
 
 - **`maxIterations`** (number) — maximum experiments before auto-stopping.
 - **`compactEvery`** (number) — optional periodic deterministic compaction cadence (every N logged experiments, emit a lossless persisted-state compaction boundary with `firstKeptEntryId: null`).
-- **`compactAtTokens`** (number | `false`) — token ceiling for deterministic compaction between experiments (default `180000`). Set `0` or `false` to disable.
+- **`compactAtPercent`** (number | `false`) — context-window % ceiling for deterministic compaction between experiments (default `70`). Set `0` or `false` to disable (or set `compactAtTokens` for an absolute token cap).
 - **`workingDir`** (string) — override the directory for all autoresearch operations: file I/O (`.auto/log.jsonl`, `.auto/prompt.md`, `.auto/measure.sh`, `.auto/checks.sh`, `.auto/ideas.md`), command execution, and git operations. Supports absolute paths or relative paths (resolved against `ctx.cwd`). The config file itself always stays under `ctx.cwd`. Fails if the directory doesn't exist.
 
 ```json
