@@ -12,10 +12,13 @@ import * as path from "node:path";
 
 import {
   reconstructJsonlState,
+  firstSuccessfulRun,
+  firstComparableBaseline,
   type ReconstructedJsonlState,
   type ReconstructedRun,
 } from "./jsonl.ts";
 import { sessionFilePath } from "./paths.ts";
+import { timingSummary } from "./timing.ts";
 
 const RECENT_RUN_LIMIT = 50;
 
@@ -47,6 +50,7 @@ export function buildAutoresearchCompactionSummary(paths: AutoresearchSummaryPat
   const sections = [
     headerSection(),
     sessionSection(state),
+    milestonesSection(state),
     rulesSection(paths.workDir, paths.mdPath),
     ideasSection(paths.workDir, paths.ideasPath),
     recentRunsSection(state, paths.workDir, paths.jsonlPath),
@@ -80,7 +84,7 @@ function sessionSection(state: ReconstructedJsonlState): string {
     `Goal: ${state.name ?? "—"}`,
     `Metric: ${state.metricName} — ${state.bestDirection} is better`,
     runCountLine(runs),
-    ...baselineAndBestLines(runs, state.bestDirection, state.metricUnit),
+    ...baselineAndBestLines(runs, state),
   ];
   return lines.join("\n");
 }
@@ -109,19 +113,37 @@ function countByStatus(runs: ReconstructedRun[]): StatusCounts {
 
 function baselineAndBestLines(
   runs: ReconstructedRun[],
-  direction: "lower" | "higher",
-  unit: string,
+  state: ReconstructedJsonlState,
 ): string[] {
-  const baseline = runs[0];
+  const unit = state.metricUnit;
+  const baseline = runs.find((run) => run.status === "keep" && Number.isFinite(run.metric));
   if (!baseline) return [];
   const lines = [`Baseline (#${baseline.run}): ${formatMetricWithUnit(baseline.metric, unit)}`];
-  const best = bestRun(runs, direction);
+  const best = bestRun(runs, state.bestDirection);
   if (best && best.run !== baseline.run) {
-    lines.push(
-      `Best     (#${best.run}): ${formatMetricWithUnit(best.metric, unit)}${formatDelta(best.metric, baseline.metric)}`,
-    );
+    let bestLine = `Best     (#${best.run}): ${formatMetricWithUnit(best.metric, unit)}${formatDelta(best.metric, baseline.metric)}`;
+    const original = firstComparableBaseline(state.results, state.metricName, state.metricUnit, state.bestDirection);
+    if (original && original.segment !== state.currentSegment && original.metric !== 0) {
+      const pct = ((best.metric - original.metric) / Math.abs(original.metric)) * 100;
+      bestLine += ` (${pct >= 0 ? "+" : ""}${pct.toFixed(1)}% from first baseline)`;
+    }
+    lines.push(bestLine);
   }
   return lines;
+}
+
+/** Synthesize kept milestones + findings so stale prompt.md prose never hides actual progress. */
+function milestonesSection(state: ReconstructedJsonlState): string {
+  const kept = currentSegmentRuns(state).filter((run) => run.status === "keep" && Number.isFinite(run.metric));
+  if (kept.length <= 1) return "";
+  const baseline = kept[0]!;
+  const lines = kept.slice(-15).map((run) => {
+    const finding = typeof run.asi?.finding === "string" && run.asi.finding.trim()
+      ? ` — ${run.asi.finding.trim().slice(0, 180)}`
+      : "";
+    return `- #${run.run} ${formatMetricWithUnit(run.metric, state.metricUnit)}${formatDelta(run.metric, baseline.metric)}: ${run.description || "(no description)"}${finding}`;
+  });
+  return `## Kept Milestones (current segment)\n\n${lines.join("\n")}`;
 }
 
 function formatMetricWithUnit(value: number, unit: string): string {
@@ -186,15 +208,15 @@ function nextStepSection(): string {
 // Recent runs
 // ---------------------------------------------------------------------------
 
-/** Baseline metric for a run = first run in the same segment across full reconstructed state. */
+/** Failed attempts never establish or compare against a baseline. */
 function baselineFor(run: ReconstructedRun, all: ReconstructedRun[]): number | null {
-  const sameSegment = all.find((other) => other.segment === run.segment);
-  return sameSegment?.metric ?? null;
+  if (run.status === "crash" || run.status === "checks_failed") return null;
+  return firstSuccessfulRun(all, run.segment)?.metric ?? null;
 }
 
 function formatRunLine(run: ReconstructedRun, baseline: number | null): string {
   const head = `#${run.run} ${padStatus(run.status)} ${formatMetric(run.metric)}${formatDelta(run.metric, baseline)}`;
-  const parts = [head, formatDescription(run), ...formatAsiFields(run.asi)];
+  const parts = [head, formatDescription(run), ...(run.timing ? [timingSummary(run.timing)] : []), ...formatAsiFields(run.asi)];
   return parts.filter(Boolean).join(" | ");
 }
 

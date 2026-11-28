@@ -46,8 +46,7 @@ Then start the loop inside pi:
 | Tool | Description |
 |------|-------------|
 | `init_experiment` | One-time session config — name, metric, unit, direction |
-| `run_experiment` | Runs any command, times wall-clock duration, captures output |
-| `log_experiment` | Records result, auto-commits, updates widget and dashboard |
+| `run_experiment` | Runs benchmark + checks, parses `METRIC`/`TIMING`, decides keep/discard/crash/checks_failed, auto-commits/reverts code, persists `.auto/` in git, and updates dashboards |
 
 ### `/autoresearch` command
 
@@ -55,9 +54,11 @@ Then start the loop inside pi:
 |------------|-------------|
 | `/autoresearch` or `/autoresearch help` | Show help without activating autoresearch mode. `--help` and `-h` work too. |
 | `/autoresearch <text>` | Enter autoresearch mode. If `.auto/prompt.md` exists, resumes the loop with `<text>` as context. Otherwise, sets up a new session. |
-| `/autoresearch off` | Leave autoresearch mode. Stops auto-resume and clears runtime state but keeps `.auto/log.jsonl` intact. |
-| `/autoresearch finalize` | Stop the loop like `off` (aborting a run in progress), then load the `autoresearch-finalize` skill to turn kept experiments into reviewable branches. |
-| `/autoresearch clear` | Delete `.auto/log.jsonl`, reset all state, and turn autoresearch mode off. Use this for a clean start. |
+| `/autoresearch pause` | Pause the loop, keeping history and showing **autoresearch paused** in the bar. Aborts an in-progress run. |
+| `/autoresearch resume` | Resume a paused session without resetting its baseline or history. |
+| `/autoresearch off` | Legacy alias: pauses rather than turning off when `.auto/prompt.md` exists. |
+| `/autoresearch finalize` | Stop the loop (including a paused loop), then load the finalize skill when experiments exist. A recorded finalization stays stopped even if the playbook remains. |
+| `/autoresearch clear` | Delete `.auto/log.jsonl` and reset results; remains visibly paused when the playbook exists. |
 | `/autoresearch export` | Open a live dashboard in your browser. Auto-updates as experiments run. |
 | `/autoresearch dashboard` | Open the fullscreen scrollable dashboard overlay in the terminal. Navigate with `↑`/`↓`/`j`/`k`, `PageUp`/`PageDown`/`u`/`d`, `g`/`G` for top/bottom, `Escape` or `q` to close. |
 
@@ -70,7 +71,8 @@ Subcommands autocomplete: type `/autoresearch ` and pick one from the list, or s
 /autoresearch model training, run 5 minutes of train.py and note the loss ratio as optimization target
 /autoresearch export
 /autoresearch dashboard
-/autoresearch off
+/autoresearch pause
+/autoresearch resume
 /autoresearch finalize
 /autoresearch clear
 ```
@@ -179,13 +181,17 @@ Then `/reload` in pi.
 /autoresearch optimize unit test runtime, monitor correctness
 ```
 
-This activates autoresearch mode and makes the experiment tools available. If `.auto/prompt.md` does not exist, it also loads the `autoresearch-create` skill. Calling `/skill:autoresearch-create` directly does not activate the mode, so the tools remain unavailable in a fresh session.
+This activates autoresearch mode and makes the experiment tools available. If `.auto/prompt.md` does not exist, it also loads the `autoresearch-create` skill. Calling `/skill:autoresearch-create` directly also activates the mode before skill expansion. An existing `.auto/prompt.md` or experiment log activates a same-directory session, including when those files are created during an already-running session. An explicit pause remains visibly paused across reloads; finalize or deleting `.auto/` stops the session. Redirected working directories still require this session to opt in.
 
-The agent asks about your goal, command, metric, and files in scope — or infers them from context. It then creates a branch, writes `.auto/prompt.md` and `.auto/measure.sh`, runs the baseline, and starts looping immediately.
+The agent infers the goal and metric and calls `init_experiment` immediately, before implementation, optimization, or lengthy exploration. It then creates a branch, writes the playbook and benchmark/check scripts, and runs every attempt through `run_experiment`. Crashes and failed correctness checks are logged and auto-reverted (never establishing the baseline); passing commands that omit the required `METRIC <primary>=<number>` line report a format error without logging or touching git. The first successful run establishes the baseline; optimization continues from there.
 
 ### 2. The loop
 
-The agent runs autonomously: edit → commit → `run_experiment` → `log_experiment` → keep or revert → repeat. It never stops unless interrupted.
+The agent runs autonomously: edit → `run_experiment` (which runs, checks, decides, commits/reverts code, and commits `.auto/` learnings) → repeat. Continuation uses Pi’s native `{ continue: true }` boundary, not timers or injected “continue” messages.
+
+**Esc means pause.** Aborting an active run—including during a continuation boundary or retry backoff—leaves **autoresearch paused** visible and persisted across reloads. It never queues an automatic restart. Resume explicitly with `/autoresearch resume` (or `/autoresearch <context>`). Closing the dashboard with Esc only closes that UI; it does not abort the agent.
+
+**LLM errors use Pi’s native recovery.** Pi handles transient-error retries/backoff, context-overflow recovery and automatic compaction before autoresearch decides whether another iteration is needed. If recovery is exhausted or the error is not recoverable, autoresearch pauses instead of sending a fresh prompt to restart the retry budget. Configure retries through Pi’s `retry` settings, not `.auto/config.json`. A manual `/compact` also leaves the loop paused rather than launching a model request from a notification.
 
 Every result is appended to `.auto/log.jsonl` in your project — one line per run. This means:
 
@@ -204,12 +210,51 @@ This stops the loop (aborting a run in progress) and loads the `autoresearch-fin
 
 The agent reads `.auto/log.jsonl`, groups kept experiments into logical changesets, proposes the grouping for your approval, then creates independent branches from the merge-base. Each commit includes metric improvements in the message. Groups must not share files, so branches can be reviewed and merged independently.
 
+### Loop timing (optional instrumentation)
+
+Every executed `run_experiment` emits an automatic timing pair, even without script changes:
+
+```text
+TIMING start run_experiment 1795811000000
+TIMING end run_experiment 1795811032000
+```
+
+To break the command down further, optionally emit **`TIMING start <name>`** and **`TIMING end <name>`** lines from `.auto/measure.sh`:
+
+```sh
+printf 'TIMING start build\n'
+pnpm build
+printf 'TIMING end build\n'
+printf 'TIMING start benchmark\n'
+pnpm bench
+printf 'TIMING end benchmark\n'
+```
+
+An optional third field is an absolute Unix timestamp in **milliseconds**, e.g. `TIMING start build "$(date +%s%3N)"` (emit it with `printf`/`echo`). Without it, timing uses receipt time as output streams in; flush buffered output or provide timestamps for precision. Names allow letters, digits, `_`, `.`, `:`, `/`, and `-` (up to 80 characters). Nested and repeated spans work. `run_experiment`, `checks`, and `agent/other` are reserved. Invalid/unmatched/unclosed spans are ignored with an advisory note, never treated as benchmark failures. Markers are parsed before output truncation, on both stdout and stderr. Custom spans are optional and currently collected from the benchmark command, not the separately buffered correctness-check output.
+
+Timing is automatically attached to each logged run under `timing` in `.auto/log.jsonl`:
+
+- `runSeconds`: command wall time (includes builds inside the command).
+- `checksSeconds`: separately measured correctness checks.
+- `loopSeconds`: full iteration wall time, from the previous logged run to this one; the first starts at activation/initialization. This includes agent reasoning, editing/other tools, and the previous run's git/hooks overhead. Pause/reload starts a fresh timing window, excluding paused/offline time. Timing for historical runs is never invented.
+- `spans`: named spans with `startedAt`/`endedAt` Unix milliseconds and `source`.
+- `longest`: the largest measured exclusive phase, aggregating repeated names. Nested child spans are subtracted from their enclosing spans, so a 30s build inside a 32s command is not counted twice. Overlapping parallel phases are not additive.
+- `agent/other` is the **unattributed remainder**, not a claim that all that time was LLM inference.
+
+The terminal widget, log results, fullscreen dashboard, exported live dashboard, and compaction summary expose timing in compact form, for example:
+
+```text
+Loop 7m 2s · run 32s · checks 10s · longest: agent/other 6m 20s
+```
+
+After reinitializing a baseline, Progress keeps the current-segment delta and appends a dimmed lifetime comparison, e.g. `(+25.7%) (+321.0% from first baseline)`. Only successful baselines with matching metric name, unit, and direction are compared. Workload changes can still affect comparability; this is historical context, not proof of equivalent workloads.
+
 ### 4. Monitor progress
 
 - **Widget** — full results table, always visible above the editor
 - **`/autoresearch dashboard`** — fullscreen scrollable dashboard overlay (optional chord: `shortcuts.fullscreenDashboard`)
 - **`/autoresearch export`** — open a live browser dashboard with chart and share card
-- **`Escape`** — interrupt anytime and ask for a summary
+- **`Escape`** — abort the active run and persistently pause; `/autoresearch resume` restarts it
 
 ---
 
@@ -234,7 +279,7 @@ The **extension** is domain-agnostic infrastructure. The **skill** encodes domai
 │  Extension (global)  │     │  Skill (per-domain)       │
 │                      │     │                           │
 │  run_experiment      │◄────│  command: pnpm test       │
-│  log_experiment      │     │  metric: seconds (lower)  │
+│  (auto-commit/log)   │     │  metric: seconds (lower)  │
 │  widget + dashboard  │     │  scope: vitest configs    │
 │                      │     │  ideas: pool, parallel…   │
 └──────────────────────┘     └──────────────────────────┘
@@ -266,10 +311,13 @@ Create `.auto/config.json` in your pi session directory to customize behavior:
 |-------|------|-------------|
 | `workingDir` | string | Override the directory for all autoresearch operations — file I/O, command execution, and git. Supports absolute or relative paths (resolved against the pi session cwd). The config file itself always stays under the session cwd. Fails if the directory doesn't exist. |
 | `maxIterations` | number | Maximum experiments before auto-stopping. The agent is told to stop and won't run more experiments until a new segment is initialized. |
+| `compactEvery` | number | Optional periodic deterministic compaction cadence: every N logged experiments, emit a lossless persisted-state compaction boundary (`firstKeptEntryId: null`) so each window starts with fresh context. |
+| `compactAtPercent` | number \| `false` | Context-window percentage ceiling for deterministic compaction between experiments (default `70`). Set `0` or `false` to disable. |
+| `compactAtTokens` | number \| `false` | Optional absolute token ceiling override instead of `compactAtPercent`. Set `0` or `false` to disable automatic compaction. |
 
 ### Long-running loops and context
 
-The loop is designed to run unattended across context limits. When pi's [auto-compaction](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/compaction.md) summarizes the older portion of the conversation, autoresearch detects the resulting idle and re-prompts the agent to re-read `.auto/prompt.md`, the tail of `.auto/log.jsonl`, `.auto/ideas.md`, and `git log` before continuing. All progress is persisted in those files, so the post-summary turn rehydrates from the source of truth instead of relying on whatever survived compaction. No tuning required — if pi's auto-compaction is enabled (the default), this just works.
+The loop is designed to run unattended across context limits. When pi compacts the conversation (or when optional `compactEvery` triggers a periodic reset), autoresearch replaces the LLM compaction call with a deterministic summary built directly from `.auto/prompt.md`, `.auto/ideas.md`, and the tail of `.auto/log.jsonl`, then continues cleanly via pi's `agent_before_settle` boundary. All progress is persisted in those files, so the post-summary turn rehydrates from the source of truth instead of relying on whatever survived compaction. No tuning required — if pi's auto-compaction is enabled (the default), this just works.
 
 ---
 
@@ -281,7 +329,7 @@ After 3+ experiments in a session, pi-autoresearch computes a **confidence score
 
 - Uses [Median Absolute Deviation (MAD)](https://en.wikipedia.org/wiki/Median_absolute_deviation) of all metric values in the current segment as a robust noise estimator.
 - Confidence = `|best_improvement| / MAD`. A score of 2.0× means the best improvement is twice the noise floor.
-- Shown in the widget, fullscreen dashboard, and `log_experiment` output.
+- Shown in the widget, fullscreen dashboard, and `run_experiment` output.
 - Persisted to `.auto/log.jsonl` on each result for post-hoc analysis.
 - **Advisory only** — never auto-discards. The agent is guided to re-run experiments when confidence is low, but the final keep/discard decision stays with the agent.
 
@@ -319,8 +367,8 @@ pnpm typecheck
 
 Drop executable scripts in `.auto/hooks/` to run code at iteration boundaries. Hooks are **transparent to the agent** — the agent calls tools and sees results; hooks run alongside without any agent-facing surface.
 
-- `.auto/hooks/before.sh` — fires before every iteration (at `/autoresearch` activation and at the end of every `log_experiment`, after `after.sh`). Use for prospective work: fetch research, prime context for the next attempt.
-- `.auto/hooks/after.sh` — fires at the end of every `log_experiment`. Use for retrospective work: annotate learnings, send notifications.
+- `.auto/hooks/before.sh` — fires before every iteration (at `/autoresearch` activation and at the end of every logged `run_experiment`, after `after.sh`). Use for prospective work: fetch research, prime context for the next attempt.
+- `.auto/hooks/after.sh` — fires at the end of every logged `run_experiment`. Use for retrospective work: annotate learnings, send notifications.
 
 **Contract:**
 
@@ -365,7 +413,7 @@ Drop executable scripts in `.auto/hooks/` to run code at iteration boundaries. H
 }
 ```
 
-**Agent signal.** The agent writes `description` and `asi.*` fields in its `log_experiment` calls for its own future-self reasoning. The hook opportunistically mines whichever fields the agent naturally uses — `asi.hypothesis`, `asi.next_focus`, `description`, etc. There is no dedicated "hook input" field; the agent is unaware the hook exists.
+**Agent signal.** The agent writes `description`, `hypothesis`, `prev_learning`, and `asi.*` fields in its `run_experiment` calls for its own future-self reasoning. The hook opportunistically mines whichever fields the agent naturally uses — `asi.hypothesis`, `asi.learning`, `description`, etc. There is no dedicated "hook input" field; the agent is unaware the hook exists.
 
 **Examples.** Reference scripts for both stages live at [`skills/autoresearch-hooks/examples/`](skills/autoresearch-hooks/examples/) — external search, qmd document search, persistent learnings, native notifications, git tagging, anti-thrash, idea rotator, hypothesis reflection, context rotation. Copy one to your session's `.auto/hooks/` directory, adapt, `chmod +x`.
 

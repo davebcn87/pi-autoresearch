@@ -10,7 +10,7 @@ Optional scripts that run at iteration boundaries in an autoresearch session. Tw
 ```
 .auto/hooks/
   before.sh    # fires before each iteration (prospective)
-  after.sh     # fires after each log_experiment (retrospective)
+  after.sh     # fires after each logged run_experiment (retrospective)
 ```
 
 Both files are optional. Files without the executable bit are silently ignored.

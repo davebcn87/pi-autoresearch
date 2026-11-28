@@ -203,6 +203,7 @@
       <div>
         <h1 class="title" id="title">Autoresearch</h1>
         <div class="meta" id="meta">Waiting for data…</div>
+        <div class="meta" id="loop-timing"></div>
       </div>
       <button class="share-btn" id="share-btn" onclick="downloadShareCard()">Export as image ↓</button>
     </div>
@@ -395,10 +396,22 @@
         catch { return fail('One JSONL line is invalid JSON.'); }
       }
 
-      return normalizePayload(
-        objects.find(item => item.type === 'config') || null,
-        objects.filter(item => item.run != null)
-      );
+      return normalizeEntries(objects);
+    }
+
+    function normalizeEntries(objects) {
+      let config = DEFAULT_CONFIG, segment = 0, hasRuns = false;
+      const runs = [];
+      for (const entry of objects) {
+        if (entry.type === 'config') {
+          if (hasRuns) segment++;
+          config = entry;
+        } else if (entry.run != null) {
+          hasRuns = true;
+          runs.push({ ...entry, segment, metricName: config.metricName || 'metric', metricUnit: config.metricUnit || '', direction: config.bestDirection || 'lower' });
+        }
+      }
+      return normalizePayload({ ...config, segment }, runs);
     }
 
     function parseJsonDocument(text) {
@@ -407,10 +420,7 @@
       catch { return fail('JSON parse failed.'); }
 
       if (Array.isArray(doc)) {
-        return normalizePayload(
-          doc.find(item => item.type === 'config') || null,
-          doc.filter(item => item.run != null)
-        );
+        return normalizeEntries(doc);
       }
 
       if (doc && typeof doc === 'object') {
@@ -449,6 +459,7 @@
           metricName: cfg.metricName || 'metric',
           metricUnit: cfg.metricUnit || '',
           bestDirection: cfg.bestDirection === 'higher' ? 'higher' : 'lower',
+          segment: Number.isInteger(cfg.segment) ? cfg.segment : 0,
         },
         runs: runs.map(normalizeRun),
       };
@@ -463,6 +474,11 @@
         description: run.description || '',
         confidence: run.confidence,
         asi: run.asi || {},
+        timing: run.timing || null,
+        segment: Number.isInteger(run.segment) ? run.segment : 0,
+        metricName: run.metricName,
+        metricUnit: run.metricUnit,
+        direction: run.direction,
       };
     }
 
@@ -471,7 +487,9 @@
       session.runs = runs;
       session.metricUnit = config.metricUnit || '';
       session.direction = config.bestDirection || 'lower';
-      session.baseline = runs[0] ? runs[0].metric : null;
+      const baseline = runs.find((run) => run.segment === config.segment && run.status === 'keep' && Number.isFinite(run.metric));
+      session.baseline = baseline ? baseline.metric : null;
+      session.firstBaseline = runs.find((run) => run.status === 'keep' && Number.isFinite(run.metric) && run.metricName === config.metricName && run.metricUnit === config.metricUnit && run.direction === config.bestDirection) || null;
       findBestRun(runs);
     }
 
@@ -480,7 +498,7 @@
       session.bestRunIndex = -1;
 
       runs.forEach((run, index) => {
-        if (run.metric <= 0) return;
+        if (run.segment !== session.config.segment || run.status !== 'keep' || !Number.isFinite(run.metric)) return;
         if (session.best == null || isBetter(run.metric, session.best)) {
           session.best = run.metric;
           session.bestRunIndex = index;
@@ -505,8 +523,33 @@
     function renderCards() {
       setText('baseline-best', formatMetric(session.baseline) + ' → ' + formatBestMetric());
       setText('improvement', formatImprovement());
+      if (session.firstBaseline && session.firstBaseline.segment !== session.config.segment) {
+        const pct = computeImprovementPercent(session.firstBaseline.metric, session.best, session.direction);
+        if (pct != null) {
+          const note = document.createElement('span');
+          note.className = 'meta';
+          note.style.color = 'var(--muted)';
+          note.textContent = ' (' + (pct >= 0 ? '+' : '') + pct.toFixed(1) + '% from first baseline)';
+          document.getElementById('improvement').appendChild(note);
+        }
+      }
+      const timing = session.runs.at(-1)?.timing;
+      setText('loop-timing', timing ? formatTimingSummary(timing) : '');
       setText('run-count', String(session.runs.length));
       setText('kept-count', countKept() + '/' + session.runs.length);
+    }
+
+    function formatTimingDuration(seconds) {
+      if (!Number.isFinite(seconds) || seconds < 0) return '—';
+      const value = Math.round(seconds);
+      return value < 60 ? value + 's' : value < 3600 ? Math.floor(value / 60) + 'm ' + value % 60 + 's' : Math.floor(value / 3600) + 'h ' + Math.floor(value / 60) % 60 + 'm ' + value % 60 + 's';
+    }
+
+    function formatTimingSummary(timing) {
+      return (Number.isFinite(timing.loopSeconds) ? 'Loop ' + formatTimingDuration(timing.loopSeconds) + ' · ' : '') +
+        'run ' + formatTimingDuration(timing.runSeconds) +
+        (timing.checksSeconds ? ' · checks ' + formatTimingDuration(timing.checksSeconds) : '') +
+        (timing.longest ? ' · longest: ' + timing.longest.name + ' ' + formatTimingDuration(timing.longest.seconds) : '');
     }
 
     function formatBestMetric() {
