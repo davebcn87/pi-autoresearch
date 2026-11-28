@@ -1277,6 +1277,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     existingEntries: readonly SessionBoundaryDraft[],
     effect: Extract<LoopEffect, { type: "boundary_continue" }>,
     canContinue = false,
+    experimentTurnEntryId: string | null = null,
   ): { entries: SessionBoundaryDraft[]; continue: true } => {
     const entries: SessionBoundaryDraft[] = [...existingEntries];
     if (effect.compact) {
@@ -1285,7 +1286,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         summary: buildAutoresearchCompactionSummary(
           autoresearchSummaryPathsFor(resolveWorkDir(ctx.cwd)),
         ),
-        firstKeptEntryId: null,
+        firstKeptEntryId: experimentTurnEntryId,
       });
     } else if (!canContinue) {
       // Pi's boundary validator rejects `continue: true` when the trailing LLM
@@ -1693,7 +1694,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       contextOverLimit: isContextOverCompactionLimit(ctx, runtime.state),
       stopReason: currentStopReason(runtime),
     });
-    if (cont) return buildBoundaryContinuation(ctx, event.entries, cont, event.context?.canContinue === true);
+    if (cont) return buildBoundaryContinuation(ctx, event.entries, cont, event.context?.canContinue === true, event.messageEntryId);
     if (recovered && !currentStopReason(runtime)) {
       // One repair turn, not a fake logged experiment. The normal chat-only
       // guard remains in charge of every subsequent continuation.
@@ -1723,8 +1724,6 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     const cont = dispatchLoop(ctx, {
       type: "agent_before_settle",
       outcome: event.outcome,
-      compactEvery: runtime.state.compactEvery,
-      contextOverLimit: isContextOverCompactionLimit(ctx, runtime.state),
       stopReason: currentStopReason(runtime),
     });
     return cont ? buildBoundaryContinuation(ctx, event.entries, cont, event.context?.canContinue === true) : undefined;

@@ -27,6 +27,8 @@ export interface LoopState {
   readonly experimentsSinceCompact: number;
   /** Total automatic resume continuations issued in this session. */
   readonly autoResumeTurns: number;
+  /** Set by a logged experiment until its turn ends: the only boundary with a clean tree. */
+  readonly experimentLoggedInTurn: boolean;
   /** Set when auto-compaction occurred during an active run; consumed at settle. */
   readonly compactedInRun: boolean;
   readonly runningExperiment: RunningExperimentInfo | null;
@@ -65,8 +67,6 @@ export type LoopEvent =
   | {
       readonly type: "agent_before_settle";
       readonly outcome: "completed" | "aborted" | "error";
-      readonly compactEvery: number | null;
-      readonly contextOverLimit?: boolean;
       readonly stopReason: string | null;
     }
   | { readonly type: "agent_settled"; readonly aborted: boolean };
@@ -94,6 +94,7 @@ export function createLoopState(): LoopState {
     experimentsInRun: 0,
     experimentsSinceCompact: 0,
     autoResumeTurns: 0,
+    experimentLoggedInTurn: false,
     compactedInRun: false,
     runningExperiment: null,
     lastRunChecks: null,
@@ -108,6 +109,10 @@ export function isLoopActive(state: LoopState): boolean {
 
 function transition(state: LoopState, effects: readonly LoopEffect[] = NO_EFFECTS): LoopTransition {
   return { state, effects };
+}
+
+function isExperimentBoundary(state: LoopState, outcome: "completed" | "aborted" | "error"): boolean {
+  return state.experimentLoggedInTurn && state.phase === "running" && outcome === "completed";
 }
 
 function clearedState(phase: LoopPhase): LoopState {
@@ -207,6 +212,7 @@ export function transitionLoop(state: LoopState, event: LoopEvent): LoopTransiti
         phase: "running",
         experimentsInRun: state.experimentsInRun + 1,
         experimentsSinceCompact: state.experimentsSinceCompact + 1,
+        experimentLoggedInTurn: true,
         runningExperiment: null,
         lastRunChecks: null,
         lastRunDuration: null,
@@ -244,18 +250,19 @@ export function transitionLoop(state: LoopState, event: LoopEvent): LoopTransiti
       });
 
     case "turn_end": {
-      if (state.phase !== "running" || event.outcome !== "completed") {
-        return transition(state);
+      const endedTurn: LoopState = { ...state, experimentLoggedInTurn: false };
+      if (!isExperimentBoundary(state, event.outcome)) {
+        return transition(endedTurn);
       }
       const dueByCount = event.compactEvery !== null && state.experimentsSinceCompact >= event.compactEvery;
       const dueByTokens = event.contextOverLimit === true && state.experimentsSinceCompact > 0;
       if (!dueByCount && !dueByTokens) {
-        return transition(state);
+        return transition(endedTurn);
       }
       if (event.stopReason !== null) {
         return transition(
           {
-            ...state,
+            ...endedTurn,
             experimentsInRun: 0,
             experimentsSinceCompact: 0,
             compactedInRun: false,
@@ -267,7 +274,7 @@ export function transitionLoop(state: LoopState, event: LoopEvent): LoopTransiti
       const nextTurn = state.autoResumeTurns + 1;
       return transition(
         {
-          ...state,
+          ...endedTurn,
           // Reset experimentsInRun so the post-compaction iteration must log
           // its own experiment rather than looping on chat-only output.
           experimentsInRun: 0,
@@ -315,22 +322,16 @@ export function transitionLoop(state: LoopState, event: LoopEvent): LoopTransiti
         );
       }
 
-      const shouldCompact =
-        !wasCompacted &&
-        ((event.compactEvery !== null && base.experimentsSinceCompact >= event.compactEvery) ||
-          (event.contextOverLimit === true && base.experimentsSinceCompact > 0));
       const nextTurn = base.autoResumeTurns + 1;
-      const compacted = wasCompacted || shouldCompact;
 
       return transition(
         {
           ...base,
           phase: "running",
           experimentsInRun: 0,
-          experimentsSinceCompact: shouldCompact ? 0 : base.experimentsSinceCompact,
           autoResumeTurns: nextTurn,
         },
-        [{ type: "boundary_continue", turn: nextTurn, compact: shouldCompact, compacted }],
+        [{ type: "boundary_continue", turn: nextTurn, compact: false, compacted: wasCompacted }],
       );
     }
 

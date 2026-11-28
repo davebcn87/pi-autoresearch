@@ -319,3 +319,29 @@ test("randomized transition fuzzing preserves all loop state machine invariants"
     }
   }
 });
+
+test("compaction waits for the turn that logged an experiment, never a mid-iteration or settle boundary", () => {
+  const overLimit = { outcome: "completed", compactEvery: null, contextOverLimit: true, stopReason: null };
+  const { state: afterExperimentTurn } = runSequence([
+    { type: "activate", resetTurns: true },
+    { type: "agent_start" },
+    { type: "experiment_logged", limitReached: false },
+    { type: "turn_end", ...overLimit, contextOverLimit: false },
+  ]);
+
+  // The agent is now reading and editing for its next idea: context grows past the limit.
+  const editingTurn = step(afterExperimentTurn, { type: "turn_end", ...overLimit });
+  assert.deepEqual(editingTurn.effects, []);
+
+  // Stopping to talk mid-idea continues the loop without discarding the conversation.
+  const settle = step(editingTurn.state, { type: "agent_before_settle", ...overLimit });
+  assert.deepEqual(settle.effects, [{ type: "boundary_continue", turn: 1, compact: false, compacted: false }]);
+
+  // The next logged experiment leaves a clean tree, so its turn boundary compacts.
+  const { state: afterNextExperiment } = runSequence(
+    [{ type: "experiment_logged", limitReached: false }],
+    settle.state,
+  );
+  const experimentTurn = step(afterNextExperiment, { type: "turn_end", ...overLimit });
+  assert.deepEqual(experimentTurn.effects, [{ type: "boundary_continue", turn: 2, compact: true, compacted: true }]);
+});

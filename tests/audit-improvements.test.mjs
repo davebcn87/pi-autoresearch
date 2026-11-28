@@ -314,6 +314,31 @@ test("compaction summary synthesizes kept milestones and first-baseline lifetime
   }
 });
 
+test("compaction keeps the turn that logged the experiment and skips mid-iteration turns", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-boundary-"));
+  try {
+    const h = makeHarness({ cwd, contextTokens: 144_000, contextWindow: 200_000 });
+    const turnEnd = (messageEntryId) => h.handlers.get("turn_end")(
+      { outcome: "completed", entries: [], continue: false, toolResults: [], messageEntryId },
+      h.ctx,
+    );
+    await h.tools.get("init_experiment").execute("init", { name: "TPS", metric_name: "tps", direction: "higher" }, undefined, undefined, h.ctx);
+    await h.handlers.get("agent_start")({}, h.ctx);
+
+    await h.tools.get("run_experiment").execute("r1", { command: "printf 'METRIC tps=100\\n'", description: "first" }, undefined, undefined, h.ctx);
+    const experimentTurn = await turnEnd("entry-of-experiment-turn");
+    assert.equal(experimentTurn?.entries[0]?.type, "compaction");
+    assert.equal(experimentTurn?.entries[0]?.firstKeptEntryId, "entry-of-experiment-turn");
+
+    await h.tools.get("run_experiment").execute("r2", { command: "printf 'METRIC tps=110\\n'", description: "second" }, undefined, undefined, h.ctx);
+    assert.equal((await turnEnd("entry-of-second-experiment"))?.entries[0]?.type, "compaction");
+    // Still over the limit, but this turn only edited files for the next idea.
+    assert.equal(await turnEnd("entry-of-edit-turn"), undefined);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 function interruptibleExec(cwd) {
   return async (cmd, args, opts) => {
     try {
