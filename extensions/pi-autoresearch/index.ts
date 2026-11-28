@@ -1796,6 +1796,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
   registerGatedTool({
     name: "init_experiment",
+    executionMode: "sequential",
     label: "Init Experiment",
     description:
       "Initialize the experiment session. Call once before the first run_experiment to set the name, primary metric, unit, and direction. Writes the config header to .auto/log.jsonl.",
@@ -1954,6 +1955,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
   registerGatedTool({
     name: "run_experiment",
+    executionMode: "sequential",
     label: "Run Experiment",
     description:
       `Run an experiment, execute .auto/checks.sh when present, parse METRIC/TIMING lines, decide keep/discard/crash/checks_failed, auto-commit or revert code, and persist .auto/ learnings in git. Output is truncated to last ${EXPERIMENT_MAX_LINES} lines or ${EXPERIMENT_MAX_BYTES / 1024}KB. If benchmark exits 0 without emitting "METRIC <primary>=<number>", reports the format error without logging or modifying git.`,

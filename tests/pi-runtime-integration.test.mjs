@@ -39,6 +39,7 @@ test("Pi 1.7 resource loader loads pi-autoresearch cleanly with defaultActive: f
     );
     for (const tool of ext.tools.values()) {
       assert.equal(tool.definition.defaultActive, false);
+      assert.equal(tool.definition.executionMode, "sequential", `${tool.definition.name} must not run beside sibling tool calls`);
       assert.ok(tool.definition.annotations, `missing annotations on ${tool.definition.name}`);
     }
 
