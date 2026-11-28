@@ -313,3 +313,56 @@ test("compaction summary synthesizes kept milestones and first-baseline lifetime
     await rm(cwd, { recursive: true, force: true });
   }
 });
+
+function interruptibleExec(cwd) {
+  return async (cmd, args, opts) => {
+    try {
+      const { stdout, stderr } = await execFileAsync(cmd, args, { cwd: opts?.cwd ?? cwd, signal: opts?.signal });
+      return { code: 0, stdout, stderr, killed: false };
+    } catch (e) {
+      return { code: typeof e.code === "number" ? e.code : 1, stdout: e.stdout ?? "", stderr: e.stderr ?? "", killed: e.name === "AbortError" };
+    }
+  };
+}
+
+async function commitRepoWithSlowableChecks(cwd, exec) {
+  await exec("git", ["init", "-b", "main"]);
+  await exec("git", ["config", "user.email", "test@example.com"]);
+  await exec("git", ["config", "user.name", "Test"]);
+  await writeFile(join(cwd, "app.txt"), "v0\n");
+  await mkdir(join(cwd, ".auto"), { recursive: true });
+  await writeFile(join(cwd, ".auto/checks.sh"), "#!/usr/bin/env bash\nif [ -f .auto/slow ]; then sleep 30; fi\n");
+  await exec("git", ["add", "-A"]);
+  await exec("git", ["commit", "-m", "initial"]);
+}
+
+function abortAfter(milliseconds) {
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), milliseconds);
+  return controller.signal;
+}
+
+test("interrupting checks leaves the experiment's work and the log untouched", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-autoresearch-abort-checks-"));
+  try {
+    const exec = interruptibleExec(cwd);
+    await commitRepoWithSlowableChecks(cwd, exec);
+    const h = makeHarness({ cwd, onExec: exec });
+    const run = (description, signal) => h.tools.get("run_experiment")
+      .execute(description, { command: "printf 'METRIC ms=100\\n'", description }, signal, undefined, h.ctx);
+    await h.tools.get("init_experiment").execute("init", { name: "Abort", metric_name: "ms", direction: "lower" }, undefined, undefined, h.ctx);
+    await run("baseline");
+
+    await writeFile(join(cwd, "app.txt"), "uncommitted experiment\n");
+    await writeFile(join(cwd, "untracked.txt"), "new file\n");
+    await writeFile(join(cwd, ".auto/slow"), "");
+    await assert.rejects(run("interrupted", abortAfter(500)), /aborted/);
+
+    assert.equal(await readFile(join(cwd, "app.txt"), "utf8"), "uncommitted experiment\n");
+    assert.equal(await readFile(join(cwd, "untracked.txt"), "utf8"), "new file\n");
+    const runs = (await readFile(join(cwd, ".auto/log.jsonl"), "utf8")).trim().split("\n").map(JSON.parse).filter((e) => e.run);
+    assert.deepEqual(runs.map((e) => e.status), ["keep"]);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});

@@ -384,6 +384,10 @@ function formatElapsed(ms: number): string {
   return `${s}s`;
 }
 
+function interruptedError(): Error {
+  return new Error("aborted");
+}
+
 /** Kill a process tree (best effort, tries process group first) */
 function killTree(pid: number): void {
   try {
@@ -2215,7 +2219,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
           if (tempFileStream) tempFileStream.end();
 
           if (signal?.aborted) {
-            reject(new Error("aborted"));
+            reject(interruptedError());
             return;
           }
 
@@ -2269,6 +2273,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         }
         runTiming!.spans.push({ name: "checks", startedAt: ct0, endedAt: Date.now(), source: "automatic" });
       }
+      if (signal?.aborted) throw interruptedError();
       runTiming = { ...summarizeTiming(runTiming!.spans), warnings: [...collector.warnings] };
 
       dispatchLoop(ctx, {
